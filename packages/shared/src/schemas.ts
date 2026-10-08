@@ -1,0 +1,46 @@
+import { z } from "zod";
+
+export const idSchema = z.string().trim().min(1).max(128);
+export const relationScopeSchema = z.enum(["lineage", "cohort_guest"]);
+export const personStatusSchema = z.enum(["active", "archived"]);
+export const datePrecisionSchema = z.enum(["year", "month", "day"]);
+export const achievementKindSchema = z.enum(["achievement", "honor"]);
+
+export const treeQuerySchema = z.object({
+  rootPersonId: idSchema.optional(),
+  includeGuests: z.coerce.boolean().optional().default(false),
+  maxDepth: z.coerce.number().int().min(0).max(100).optional(),
+});
+
+export const personSearchQuerySchema = z.object({
+  q: z.string().trim().min(1).max(100),
+  limit: z.coerce.number().int().min(1).max(100).optional().default(20),
+});
+
+export const personUpdateSchema = z.object({
+  bio: z.string().trim().max(10_000).optional(),
+  nickname: z.string().trim().max(100).nullable().optional(),
+  version: z.number().int().min(1),
+}).strict();
+
+export const achievementInputSchema = z.object({
+  kind: achievementKindSchema,
+  title: z.string().trim().min(1).max(200),
+  content: z.string().trim().min(1).max(20_000),
+  occurredOn: z.string().regex(/^\d{4}(?:-\d{2})?(?:-\d{2})?$/).nullable().optional(),
+  datePrecision: datePrecisionSchema.nullable().optional(),
+}).strict().superRefine((value, ctx) => {
+  if (value.occurredOn && value.datePrecision) {
+    const expectedLength = { year: 4, month: 7, day: 10 }[value.datePrecision];
+    if (value.occurredOn.length !== expectedLength) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["occurredOn"], message: "日期格式与精度不匹配" });
+    }
+  }
+});
+
+export const idParamsSchema = z.object({ id: idSchema });
+
+export type TreeQueryInput = z.infer<typeof treeQuerySchema>;
+export type PersonSearchQueryInput = z.infer<typeof personSearchQuerySchema>;
+export type PersonUpdateInput = z.infer<typeof personUpdateSchema>;
+export type AchievementInput = z.infer<typeof achievementInputSchema>;

@@ -2,19 +2,33 @@
 
 翻斗花园师徒传承档案 Web 项目。
 
-## 当前状态
+## 初版状态
 
-项目骨架已创建，业务功能尚未实现。技术方向：
+当前初版包含：
 
-- `apps/web`：Vue 3 + TypeScript 前端
-- `apps/api`：Hono + TypeScript Workers API
-- `packages/shared`：前后端共享类型与校验契约
-- `database/migrations`：D1/SQLite 迁移文件
+- Vue 3 + TypeScript + Vite 树谱首页
+- 点击人物节点打开简介抽屉，跳转 `/person/:id` 详情页
+- 姓名、方向和届次搜索；届次折叠；桌面与移动响应式布局
+- Hono + TypeScript Workers API：`/api/health`、`/api/tree`、`/api/people/:id`、`/api/cohorts`
+- D1/SQLite 初始迁移与前后端共享契约
+- 明确标注的虚构演示资料；未接入真实成员档案
 
-项目约束与需求说明保留在工作区上级目录的说明文件中；提交仓库时只加入经过脱敏的项目文档，不提交任何 API key、Token、真实成员资料或数据库副本。
+## 本地运行
 
-## 开始开发前
+```bash
+pnpm install
+pnpm dev:web
+pnpm dev:api
+```
 
-1. 确认 GitHub 远程仓库账号、仓库名和可见性。
-2. 确认登录方式、访问范围、届次定义和主树根节点。
-3. 初始化前端、Worker、共享契约和本地 D1/R2 运行配置。
+前端默认地址为 `http://localhost:5173`，API 默认由 Wrangler 提供。生产部署配置尚未接入 Cloudflare 账号资源。
+
+## 目录
+
+- `apps/web`：Vue 前端
+- `apps/api`：Hono Workers API
+- `packages/shared`：共享类型和 Zod 校验
+- `database/migrations`：D1/SQLite 迁移
+- `docs`：架构与视觉说明
+
+真实成员资料、API key、Token、数据库副本和备份文件不得提交到仓库。

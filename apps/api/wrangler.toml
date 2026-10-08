@@ -1,0 +1,6 @@
+name = "fandou-xingpu-api"
+main = "src/index.ts"
+compatibility_date = "2024-10-22"
+
+[vars]
+API_ENV = "demo"
