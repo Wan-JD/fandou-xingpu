@@ -1,2 +1,14 @@
 export * from "./types";
-export * from "./schemas";
+export {
+  idSchema,
+  relationScopeSchema,
+  personStatusSchema,
+  datePrecisionSchema,
+  achievementKindSchema,
+  treeQuerySchema,
+  personSearchQuerySchema,
+  personUpdateSchema,
+  achievementInputSchema,
+  idParamsSchema,
+} from "./schemas";
+export type { TreeQueryInput, PersonSearchQueryInput } from "./schemas";

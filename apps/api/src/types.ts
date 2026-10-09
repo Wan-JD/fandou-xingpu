@@ -6,11 +6,17 @@ export interface Env {
 export interface Person {
   id: string;
   name: string;
+  nickname: string | null;
+  avatarUrl: string | null;
   role: string;
   generation: string;
   joinedAt: string;
   status: "active" | "archived";
   tags: string[];
+  relationScope: "lineage" | "cohort_guest";
+  isFeatured: boolean;
+  mentorId: string | null;
+  bio: string;
 }
 
 export interface Cohort {
@@ -31,10 +37,11 @@ export interface TreeNode {
   isFeatured: boolean;
   status: "active" | "archived";
   mentorId: string | null;
-  depth: number;
+  depth: number | null;
   directStudentIds: string[];
   role: string;
   generation: string;
   joinedAt: string;
   tags: string[];
+  bio: string;
 }

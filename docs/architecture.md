@@ -18,6 +18,16 @@
 
 建议首期路由：`GET /api/tree`、`GET /api/people/:id`、`GET /api/people/search`、`GET /api/cohorts`、`GET /api/cohorts/:id`。修改资料时必须提交 `version`，服务端检测到版本不一致应返回冲突错误，避免静默覆盖。
 
+当前演示 API 已实现的返回形状如下：
+
+- `GET /api/health` 返回 `{ data: { ok, environment, timestamp }, ok, environment, timestamp }`，保留顶层字段兼容早期前端。
+- `GET /api/tree` 返回 `{ data: { rootPersonId, nodes, edges, generatedAt, demo }, meta }`。`nodes` 是树节点摘要，`edges` 的方向为 `mentorId -> studentId`。
+- `GET /api/people/:id` 返回包含 `mentor`、`students`、`bio`、`achievements`、`attachments` 和版本时间字段的详情；找不到人物时返回 `{ error: { code, message } }` 与 HTTP 404。
+- `GET /api/people/search?q=...&limit=...` 返回 `{ data: { items, total }, meta }`；`q` 必填，`limit` 范围为 1–100。
+- `GET /api/cohorts` 和 `GET /api/cohorts/:id` 返回届次及其人物摘要；找不到届次时返回标准错误 JSON 与 HTTP 404。
+
+演示数据的届次标签统一为 `YYYY届`，届次按年份归一化，不区分春季或秋季。`pnpm test:contracts` 会检查人物、节点和边的 id 一致性、唯一根节点及师徒链连续性。
+
 ## 数据与迁移
 
 `database/migrations/0001_initial.sql` 只建立空结构，没有真实成员、简历或示例档案。附件表只保存 R2 对象元数据；对象上传状态使用 `pending`/`ready`/`deleted`，以便处理数据库与对象存储不是同一事务的情况。

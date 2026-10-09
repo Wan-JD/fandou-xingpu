@@ -5,7 +5,7 @@ import { mountStarfield, sparkle, type Starfield } from "./lib/starfield";
 
 type Status = "active" | "archived";
 type Cohort = { id: string; label: string; year: number | null; sortOrder: number };
-type Person = { id: string; name: string; nickname: string | null; avatarUrl: string | null; cohort: Cohort | null; relationScope: "lineage" | "cohort_guest"; isFeatured: boolean; status: Status; mentorId: string | null; depth: number | null; directStudentIds: string[]; role: string; joinedAt: string; tags: string[]; bio: string };
+type Person = { id: string; name: string; nickname: string | null; avatarUrl: string | null; cohort: Cohort | null; relationScope: "lineage" | "cohort_guest"; isFeatured: boolean; status: Status; mentorId: string | null; depth: number | null; directStudentIds: string[]; role: string; joinedAt: string; tags: string[]; bio: string; mentor?: Person | null; students?: Person[]; achievements?: unknown[]; attachments?: unknown[]; featuredNote?: string | null };
 type Edge = { id: string; mentorId: string; studentId: string };
 type Tree = { rootPersonId: string | null; nodes: Person[]; edges: Edge[]; generatedAt: string; demo: boolean };
 type LinkSegment = { id: string; mentorId: string; studentId: string; path: string; x1: number; y1: number; x2: number; y2: number; crossCohort: boolean };
@@ -28,6 +28,8 @@ const apiFailed = ref(false);
 const query = ref("");
 const selectedPerson = ref<Person | null>(null);
 const detailPerson = ref<Person | null>(null);
+const detailLoading = ref(false);
+const detailError = ref<string | null>(null);
 const hoveredId = ref<string | null>(null);
 const pathname = ref(window.location.pathname);
 const expanded = ref<Record<string, boolean>>({});
@@ -43,6 +45,7 @@ const popupPosition = ref({ left: 0, top: 0, arrow: 0 });
 let starfield: Starfield | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let centeredOnce = false;
+let detailRequestId = 0;
 
 const people = computed(() => tree.value.nodes);
 const rootPerson = computed(() => people.value.find((person) => person.id === tree.value.rootPersonId) ?? people.value[0] ?? null);
@@ -140,11 +143,27 @@ const matchingIds = computed(() => {
   if (!text) return new Set(people.value.map((person) => person.id));
   return new Set(people.value.filter((person) => [person.name, person.nickname ?? "", person.role, formatCohort(person.cohort), ...person.tags].join(" ").toLocaleLowerCase().includes(text)).map((person) => person.id));
 });
-const currentDetail = computed(() => {
+const detailRouteId = computed(() => {
   const match = pathname.value.match(/^\/person\/([^/]+)/);
-  return match ? people.value.find((person) => person.id === decodeURIComponent(match[1])) ?? null : null;
+  if (!match) return null;
+  try { return decodeURIComponent(match[1]); } catch { return match[1]; }
 });
+const isDetailRoute = computed(() => Boolean(detailRouteId.value));
+const currentDetail = computed(() => detailRouteId.value ? people.value.find((person) => person.id === detailRouteId.value) ?? null : null);
 const detail = computed(() => detailPerson.value ?? currentDetail.value);
+const detailMentor = computed(() => {
+  const person = detail.value;
+  if (!person) return null;
+  return person.mentor ?? (person.mentorId ? people.value.find((candidate) => candidate.id === person.mentorId) ?? null : null);
+});
+const detailStudents = computed(() => {
+  const person = detail.value;
+  if (!person) return [];
+  if (person.students?.length) return person.students;
+  const ids = new Set(person.directStudentIds ?? []);
+  tree.value.edges.forEach((edge) => { if (edge.mentorId === person.id) ids.add(edge.studentId); });
+  return [...ids].map((id) => people.value.find((candidate) => candidate.id === id)).filter((candidate): candidate is Person => Boolean(candidate));
+});
 const visibleLinks = computed(() => links.value.filter((link) => !query.value || matchingIds.value.has(link.mentorId) || matchingIds.value.has(link.studentId)));
 const isVisible = (person: Person) => matchingIds.value.has(person.id);
 const relationLabel = (person: Person) => person.status === "archived" ? "已归档" : person.relationScope === "cohort_guest" ? "同届人物" : "在册成员";
@@ -162,7 +181,8 @@ function normaliseNode(node: Record<string, unknown>, index: number): Person {
   const rawYear = rawCohort?.year ?? String(rawCohort?.label ?? "").match(/\d{4}/)?.[0];
   const year = rawYear ? Number(rawYear) : (fallbackCohort?.year ?? null);
   const cohort = rawCohort || fallbackCohort ? { ...(fallbackCohort ?? {}), ...(rawCohort ?? {}), id: year ? `cohort-${year}` : String(rawCohort?.id ?? fallbackCohort?.id ?? "uncategorized"), label: year ? `${year} 届` : "未分届次", year, sortOrder: Number(rawCohort?.sortOrder ?? fallbackCohort?.sortOrder ?? 99) } as Cohort : null;
-  return { ...source, ...node, cohort, role: String(node.role ?? source.role), joinedAt: String(node.joinedAt ?? source.joinedAt), tags: Array.isArray(node.tags) ? node.tags as string[] : source.tags, bio: String(node.bio ?? source.bio) } as Person;
+  const directStudentIds = Array.isArray(node.directStudentIds) ? node.directStudentIds.map(String) : source.directStudentIds;
+  return { ...source, ...node, id: String(node.id ?? source.id), name: String(node.name ?? source.name), cohort, mentorId: node.mentorId == null ? source.mentorId : String(node.mentorId), directStudentIds, nickname: node.nickname == null ? source.nickname : String(node.nickname), avatarUrl: node.avatarUrl == null ? source.avatarUrl : String(node.avatarUrl), role: String(node.role ?? source.role), joinedAt: String(node.joinedAt ?? source.joinedAt), tags: Array.isArray(node.tags) ? node.tags.map(String) : source.tags, bio: String(node.bio ?? source.bio) } as Person;
 }
 async function loadTree() {
   loading.value = true;
@@ -171,7 +191,11 @@ async function loadTree() {
     if (!response.ok) throw new Error("tree unavailable");
     const payload = await response.json() as { data?: { nodes?: Record<string, unknown>[]; edges?: Edge[]; rootPersonId?: string; generatedAt?: string; demo?: boolean } };
     if (!payload.data?.nodes?.length) throw new Error("invalid tree");
-    tree.value = { rootPersonId: payload.data.rootPersonId ?? String(payload.data.nodes[0].id), nodes: payload.data.nodes.map(normaliseNode), edges: payload.data.edges ?? [], generatedAt: payload.data.generatedAt ?? new Date().toISOString(), demo: Boolean(payload.data.demo) };
+    const nodes = payload.data.nodes.map(normaliseNode);
+    const ids = new Set(nodes.map((person) => person.id));
+    const edges = (payload.data.edges ?? []).filter((edge) => ids.has(edge.mentorId) && ids.has(edge.studentId)).map((edge) => ({ id: String(edge.id ?? `${edge.mentorId}::${edge.studentId}`), mentorId: String(edge.mentorId), studentId: String(edge.studentId) }));
+    tree.value = { rootPersonId: payload.data.rootPersonId && ids.has(payload.data.rootPersonId) ? payload.data.rootPersonId : nodes[0].id, nodes, edges, generatedAt: payload.data.generatedAt ?? new Date().toISOString(), demo: Boolean(payload.data.demo) };
+    apiFailed.value = false;
   } catch {
     apiFailed.value = true;
     tree.value = fallbackTree;
@@ -181,6 +205,10 @@ async function loadTree() {
     await nextTick();
     observeCanvas();
     measureGraph();
+    if (detailRouteId.value) {
+      const routePerson = people.value.find((person) => person.id === detailRouteId.value);
+      if (routePerson && detailPerson.value?.id !== routePerson.id) void openDetail(routePerson);
+    }
   }
 }
 function toggleGroup(id: string) {
@@ -194,30 +222,55 @@ function navigate(path: string) {
   pathname.value = path;
   selectedPerson.value = null;
   detailPerson.value = null;
+  detailError.value = null;
   hoveredId.value = null;
   window.scrollTo({ top: 0, behavior: reducedMotion ? "auto" : "smooth" });
   if (path === "/") {
     centeredOnce = false;
     nextTick(() => { observeCanvas(); measureGraph(); });
+  } else {
+    const routeId = path.match(/^\/person\/([^/]+)/)?.[1];
+    if (routeId) {
+      let id = routeId;
+      try { id = decodeURIComponent(routeId); } catch { /* keep the encoded id for the API */ }
+      const local = people.value.find((person) => person.id === id) ?? fallbackPeople.find((person) => person.id === id);
+      if (local) void openDetail(local);
+      else void openDetailById(id);
+    }
   }
 }
 function onPopState() {
   pathname.value = window.location.pathname;
   selectedPerson.value = null;
-  if (currentDetail.value) void openDetail(currentDetail.value);
+  detailPerson.value = null;
+  detailError.value = null;
+  if (detailRouteId.value) void openDetailById(detailRouteId.value);
   else nextTick(() => { observeCanvas(); measureGraph(); });
 }
 async function openDetail(person: Person) {
-  detailPerson.value = person;
-  try {
-    const response = await fetch(`/api/people/${person.id}`);
-    if (response.ok) {
-      const payload = await response.json() as { data?: Record<string, unknown> };
-      if (payload.data) detailPerson.value = normaliseNode({ ...person, ...payload.data }, 0);
-    }
-  } catch { /* local record remains usable */ }
+  await openDetailById(person.id, person);
 }
-function viewDetail(person: Person) { navigate(`/person/${encodeURIComponent(person.id)}`); void openDetail(person); }
+async function openDetailById(id: string, localPerson?: Person) {
+  const requestId = ++detailRequestId;
+  const fallback = localPerson ?? people.value.find((person) => person.id === id) ?? fallbackPeople.find((person) => person.id === id) ?? null;
+  detailLoading.value = true;
+  detailError.value = null;
+  detailPerson.value = fallback;
+  try {
+    const response = await fetch(`/api/people/${encodeURIComponent(id)}`);
+    if (!response.ok) throw new Error(response.status === 404 ? "档案不存在" : "档案暂时无法读取");
+    const payload = await response.json() as { data?: Record<string, unknown> };
+    if (!payload.data) throw new Error("档案数据为空");
+    if (requestId === detailRequestId) detailPerson.value = normaliseNode({ ...(fallback ?? {}), ...payload.data, id }, 0);
+  } catch (error) {
+    if (requestId !== detailRequestId) return;
+    detailError.value = error instanceof Error ? error.message : "档案暂时无法读取";
+    if (!fallback) detailPerson.value = null;
+  } finally {
+    if (requestId === detailRequestId) detailLoading.value = false;
+  }
+}
+function viewDetail(person: Person) { navigate(`/person/${encodeURIComponent(person.id)}`); }
 function coreRect(id: string) {
   const node = nodeRefs.get(id);
   return (node?.querySelector(".star-avatar-core") ?? node)?.getBoundingClientRect() ?? null;
@@ -281,7 +334,7 @@ function onPointerDown(event: PointerEvent) {
   if (selectedPerson.value && target && !target.closest(".quick-popover, .star-node")) closePreview();
 }
 
-watch([query, expanded, layout], () => nextTick(measureGraph), { deep: true });
+watch([query, expanded, layout], () => nextTick(() => { measureGraph(); requestAnimationFrame(measureGraph); }), { deep: true });
 onMounted(() => {
   if (skyRef.value) starfield = mountStarfield(skyRef.value);
   resizeObserver = new ResizeObserver(() => onResize());
@@ -290,7 +343,7 @@ onMounted(() => {
   window.addEventListener("resize", onResize);
   window.addEventListener("keydown", onKeydown);
   window.addEventListener("pointerdown", onPointerDown);
-  if (currentDetail.value) void openDetail(currentDetail.value);
+  if (detailRouteId.value) void openDetailById(detailRouteId.value);
 });
 onUnmounted(() => {
   starfield?.destroy();
@@ -324,7 +377,7 @@ onUnmounted(() => {
       </div>
     </header>
 
-    <main v-if="!currentDetail" class="home-page">
+    <main v-if="!isDetailRoute" class="home-page">
       <section class="hero">
         <p class="eyebrow">THE LINEAGE CONSTELLATION</p>
         <h1>让每颗星，<em>找到自己的轨道。</em></h1>
@@ -440,7 +493,7 @@ onUnmounted(() => {
       </section>
       <footer class="page-footer"><span>翻斗星谱 · 早期演示版</span><span>资料仅用于界面演示，真实成员档案接入中</span></footer>
     </main>
-    <main v-else class="detail-page">
+    <main v-else class="detail-page" aria-live="polite">
       <button class="back-link" type="button" @click="navigate('/')">← 返回星谱</button>
       <div v-if="detail" class="detail-layout">
         <section class="detail-intro">
@@ -461,8 +514,14 @@ onUnmounted(() => {
           <article class="detail-section split-section">
             <div>
               <span class="section-label">02 / 关系</span>
-              <h2>{{ detail.mentorId ? "沿着一条主线继续" : "谱系起点" }}</h2>
-              <p>{{ detail.mentorId ? "这位成员从上一届连接而来，并把自己的经验继续传给下一位。" : "从这里出发，连接仍在发生。" }}</p>
+              <h2>{{ detailMentor ? "沿着一条主线继续" : "谱系起点" }}</h2>
+              <p>{{ detailMentor ? "这位成员从上一届连接而来，并把自己的经验继续传给下一位。" : "从这里出发，连接仍在发生。" }}</p>
+              <button v-if="detailMentor" class="popover-detail" type="button" @click="viewDetail(detailMentor)">师傅：{{ detailMentor.name }} <span aria-hidden="true">↗</span></button>
+              <p v-else class="relation-muted">暂无已记录的师傅</p>
+              <div v-if="detailStudents.length" class="relation-students">
+                <span class="section-label">传给下一届</span>
+                <button v-for="student in detailStudents" :key="student.id" class="popover-detail" type="button" @click="viewDetail(student)">学生：{{ student.name }} <span aria-hidden="true">↗</span></button>
+              </div>
             </div>
             <div>
               <span class="section-label">03 / 加入时间</span>
@@ -476,7 +535,12 @@ onUnmounted(() => {
           </article>
         </section>
       </div>
-      <div v-else class="state-message">正在读取档案</div>
+      <div v-else class="state-message">
+        <span v-if="detailLoading" class="loading-ring"></span>
+        <span>{{ detailLoading ? "正在读取档案" : (detailError ?? "没有找到这份档案") }}</span>
+        <button v-if="detailError" type="button" @click="detailRouteId && openDetailById(detailRouteId)">重试</button>
+      </div>
+      <p v-if="detail && detailError" class="state-message" role="status">{{ detailError }}，当前显示本地演示资料。</p>
     </main>
   </div>
 </template>

@@ -10,6 +10,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@fandou-xingpu/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
       hono:
         specifier: ^4.6.12
         version: 4.13.13

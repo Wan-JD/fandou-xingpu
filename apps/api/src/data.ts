@@ -1,99 +1,79 @@
-import type { Cohort, Person, TreeNode } from "./types";
+import type { Person, Cohort, TreeNode } from "./types";
 
-// Deliberately fictional records for local development and UI integration.
+// Fictional records used by the local API until D1 is connected.
+// Keep these ids stable: the web prototype uses them in its links.
 export const demoPeople: Person[] = [
-  {
-    id: "demo-person-001",
-    name: "演示成员甲",
-    role: "产品与社区",
-    generation: "2019届",
-    joinedAt: "2019-06-18",
-    status: "active",
-    tags: ["产品", "社区"]
-  },
-  {
-    id: "demo-person-002",
-    name: "演示成员乙",
-    role: "全栈开发",
-    generation: "2021届",
-    joinedAt: "2021-03-22",
-    status: "active",
-    tags: ["工程", "开源"]
-  },
-  {
-    id: "demo-person-003",
-    name: "演示成员丙",
-    role: "研究与内容",
-    generation: "2023届",
-    joinedAt: "2023-09-01",
-    status: "archived",
-    tags: ["研究", "写作"]
-  }
+  { id: "demo-person-001", name: "林砚", nickname: "砚叔", avatarUrl: null, role: "发起人 / 产品顾问", generation: "2019届", joinedAt: "2019-06-18", status: "active", tags: ["产品", "社区"], relationScope: "lineage", isFeatured: true, mentorId: null, bio: "从一张白纸开始，记录每一次认真连接。" },
+  { id: "demo-person-002", name: "周予安", nickname: null, avatarUrl: null, role: "全栈开发者", generation: "2021届", joinedAt: "2021-03-22", status: "active", tags: ["工程", "开源"], relationScope: "lineage", isFeatured: false, mentorId: "demo-person-001", bio: "喜欢把复杂的问题拆成可以一起走的路。" },
+  { id: "demo-person-003", name: "许棠", nickname: null, avatarUrl: null, role: "研究与内容", generation: "2021届", joinedAt: "2021-04-08", status: "active", tags: ["研究", "写作"], relationScope: "lineage", isFeatured: false, mentorId: "demo-person-001", bio: "在资料、田野和人之间，寻找能被传下去的东西。" },
+  { id: "demo-person-004", name: "苏禾", nickname: null, avatarUrl: null, role: "交互设计师", generation: "2023届", joinedAt: "2023-09-01", status: "active", tags: ["设计", "体验"], relationScope: "lineage", isFeatured: false, mentorId: "demo-person-002", bio: "让每一个重要的瞬间都被好好看见。" },
+  { id: "demo-person-005", name: "陈放", nickname: null, avatarUrl: null, role: "数据工程师", generation: "2023届", joinedAt: "2023-10-12", status: "active", tags: ["数据", "工具"], relationScope: "lineage", isFeatured: false, mentorId: "demo-person-002", bio: "把看不见的结构，整理成可被理解的秩序。" },
+  { id: "demo-person-006", name: "唐宁", nickname: null, avatarUrl: null, role: "社会创新实践者", generation: "2024届", joinedAt: "2024-03-16", status: "archived", tags: ["公益", "组织"], relationScope: "lineage", isFeatured: false, mentorId: "demo-person-003", bio: "在真实世界里验证每一个好想法。" },
 ];
 
 export const demoCohorts: Cohort[] = [
-  {
-    id: "demo-cohort-2019",
-    name: "2019届",
-    year: 2019,
-    memberCount: 1,
-    description: "用于演示谱系起点的虚构届次。"
-  },
-  {
-    id: "demo-cohort-2021-spring",
-    name: "2021届",
-    year: 2021,
-    memberCount: 1,
-    description: "用于演示初版接口的虚构届次。"
-  },
-  {
-    id: "demo-cohort-2023",
-    name: "2023届",
-    year: 2023,
-    memberCount: 1,
-    description: "用于演示归档记录的虚构届次。"
-  }
+  { id: "cohort-2019", name: "2019届", year: 2019, memberCount: 1, description: "谱系起点的虚构届次。" },
+  { id: "cohort-2021", name: "2021届", year: 2021, memberCount: 2, description: "承接第一段师徒关系的虚构届次。" },
+  { id: "cohort-2023", name: "2023届", year: 2023, memberCount: 2, description: "在同一届中继续分化的虚构届次。" },
+  { id: "cohort-2024", name: "2024届", year: 2024, memberCount: 1, description: "当前演示谱系的最新届次。" },
 ];
 
-const cohortByGeneration = new Map(
-  demoCohorts.map((cohort) => [cohort.name, cohort])
-);
+const cohortByGeneration = new Map(demoCohorts.map((cohort) => [cohort.name, cohort]));
+const childrenByMentor = new Map<string, Person[]>();
+for (const person of demoPeople) {
+  if (!person.mentorId) continue;
+  const children = childrenByMentor.get(person.mentorId) ?? [];
+  children.push(person);
+  childrenByMentor.set(person.mentorId, children);
+}
 
-export const demoTree: {
-  rootPersonId: string | null;
-  nodes: TreeNode[];
-  edges: { id: string; mentorId: string; studentId: string }[];
-  generatedAt: string;
-  demo: true;
-} = {
+export function toSummary(person: Person) {
+  const cohort = cohortByGeneration.get(person.generation);
+  return {
+    id: person.id,
+    name: person.name,
+    nickname: person.nickname,
+    avatarUrl: person.avatarUrl,
+    cohort: cohort ? { id: cohort.id, label: cohort.name, year: cohort.year, sortOrder: cohort.year - 2019 } : null,
+    relationScope: person.relationScope,
+    isFeatured: person.isFeatured,
+    status: person.status,
+  };
+}
+
+export function toTreeNode(person: Person, index: number): TreeNode {
+  const cohort = cohortByGeneration.get(person.generation);
+  const mentor = person.mentorId ? demoPeople.find((candidate) => candidate.id === person.mentorId) : null;
+  return {
+    ...toSummary(person),
+    mentorId: person.mentorId,
+    depth: mentor ? Math.max(0, demoPeople.findIndex((candidate) => candidate.id === mentor.id)) : index === 0 ? 0 : 1,
+    directStudentIds: (childrenByMentor.get(person.id) ?? []).map((student) => student.id),
+    role: person.role,
+    generation: person.generation,
+    joinedAt: person.joinedAt,
+    tags: person.tags,
+    bio: person.bio,
+    cohort: cohort ? { id: cohort.id, label: cohort.name, year: cohort.year, sortOrder: cohort.year - 2019 } : null,
+  };
+}
+
+export const demoTree = {
   rootPersonId: demoPeople[0]?.id ?? null,
-  nodes: demoPeople.map((person, index) => {
-    const cohort = cohortByGeneration.get(person.generation);
-    return {
-      id: person.id,
-      name: person.name,
-      nickname: null,
-      avatarUrl: null,
-      cohort: cohort
-        ? { id: cohort.id, label: cohort.name, year: cohort.year, sortOrder: index }
-        : null,
-      relationScope: "lineage",
-      isFeatured: index === 0,
-      status: person.status,
-      mentorId: index === 0 ? null : demoPeople[index - 1]?.id ?? null,
-      depth: index === 0 ? 0 : 1,
-      directStudentIds: demoPeople[index + 1] ? [demoPeople[index + 1].id] : [],
-      role: person.role,
-      generation: person.generation,
-      joinedAt: person.joinedAt,
-      tags: person.tags
-    };
-  }),
-  edges: demoPeople.slice(1).map((person, index) => ({
-    id: `demo-edge-${person.id}`,
-    mentorId: demoPeople[index]?.id ?? "",
-    studentId: person.id
-  })),
+  nodes: demoPeople.map(toTreeNode),
+  edges: demoPeople.flatMap((person) => person.mentorId ? [{ id: `edge-${person.id}`, mentorId: person.mentorId, studentId: person.id }] : []),
   generatedAt: new Date().toISOString(),
-  demo: true
+  demo: true as const,
 };
+
+export function findPerson(id: string) {
+  return demoPeople.find((person) => person.id === id);
+}
+
+export function findCohort(id: string) {
+  return demoCohorts.find((cohort) => cohort.id === id);
+}
+
+export function getChildren(id: string) {
+  return childrenByMentor.get(id) ?? [];
+}

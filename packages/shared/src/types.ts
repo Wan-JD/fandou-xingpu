@@ -97,6 +97,12 @@ export interface ApiError {
 export interface ApiResponse<T> {
   data: T;
   requestId?: string;
+  meta?: {
+    demo?: boolean;
+    total?: number;
+    limit?: number;
+    query?: string;
+  };
 }
 
 export interface ApiErrorResponse {
@@ -127,4 +133,9 @@ export interface AchievementInput {
 export interface PersonSearchQuery {
   q: string;
   limit?: number;
+}
+
+export interface PersonSearchResult {
+  items: PersonSummary[];
+  total: number;
 }
