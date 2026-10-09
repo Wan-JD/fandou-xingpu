@@ -2,6 +2,7 @@ export type Id = string;
 
 export type RelationScope = "lineage" | "cohort_guest";
 export type PersonStatus = "active" | "archived";
+export type Destination = "big_tech" | "postgraduate_985" | "postgraduate_211" | "startup" | "further_study" | "other";
 export type DatePrecision = "year" | "month" | "day";
 export type AchievementKind = "achievement" | "honor";
 export type AttachmentCategory = "avatar" | "resume" | "photo" | "certificate" | "other";
@@ -23,6 +24,7 @@ export interface PersonSummary {
   relationScope: RelationScope;
   isFeatured: boolean;
   status: PersonStatus;
+  destination: Destination | null;
 }
 
 export interface PersonNode extends PersonSummary {

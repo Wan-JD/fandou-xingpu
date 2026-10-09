@@ -12,6 +12,7 @@ export interface Person {
   generation: string;
   joinedAt: string;
   status: "active" | "archived";
+  destination: "big_tech" | "postgraduate_985" | "postgraduate_211" | "startup" | "further_study" | "other" | null;
   tags: string[];
   relationScope: "lineage" | "cohort_guest";
   isFeatured: boolean;
@@ -36,6 +37,7 @@ export interface TreeNode {
   relationScope: "lineage" | "cohort_guest";
   isFeatured: boolean;
   status: "active" | "archived";
+  destination: "big_tech" | "postgraduate_985" | "postgraduate_211" | "startup" | "further_study" | "other" | null;
   mentorId: string | null;
   depth: number | null;
   directStudentIds: string[];

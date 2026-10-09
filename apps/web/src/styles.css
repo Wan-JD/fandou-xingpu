@@ -27,6 +27,21 @@
   -webkit-font-smoothing: antialiased;
 }
 
+/* Destination markers reuse the existing palette; the star core remains the status signal. */
+.destination-big_tech { --destination: 231 201 130; --destination-ring: double; }
+.destination-postgraduate_985 { --destination: 142 217 208; --destination-ring: solid; }
+.destination-postgraduate_211 { --destination: 145 177 210; --destination-ring: dashed; }
+.destination-startup { --destination: 231 201 130; --destination-ring: solid; }
+.destination-further_study { --destination: 142 217 208; --destination-ring: dotted; }
+.destination-other { --destination: 145 177 210; --destination-ring: dotted; }
+.star-node[class*="destination-"]:not(.destination-unset) .star-avatar-ring { border-style: var(--destination-ring); border-color: rgb(var(--destination) / 0.72); box-shadow: 0 0 12px rgb(var(--destination) / 0.18); }
+.destination-badge { margin-top: 6px; padding: 2px 8px; border: 1px solid rgb(var(--destination, 145 177 210) / 0.42); border-radius: 999px; background: rgb(var(--destination, 145 177 210) / 0.08); color: rgb(var(--destination, 145 177 210)); font-size: 9px; line-height: 1.4; letter-spacing: 0.12em; white-space: nowrap; box-shadow: 0 0 12px rgb(var(--destination, 145 177 210) / 0.12); }
+.popover-destination, .detail-destination { display: inline-flex; width: fit-content; }
+.popover-destination { margin-top: 12px; }
+.detail-destination { margin-top: 14px; }
+.destination-key i { width: 13px; height: 13px; border: 2px var(--destination-ring) rgb(var(--destination) / 0.78); border-radius: 50%; box-shadow: 0 0 9px rgb(var(--destination) / 0.28); }
+.record-note.graduated i { background: var(--fog); box-shadow: 0 0 8px var(--fog); }
+
 * { box-sizing: border-box; }
 html { background: var(--space-deep); }
 body { min-width: 320px; margin: 0; background: var(--space-deep); color: var(--ink); }

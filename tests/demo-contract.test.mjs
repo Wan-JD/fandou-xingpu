@@ -2,8 +2,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 const { demoPeople, demoCohorts, demoTree } = await import("../apps/api/src/data.ts");
+const { destinationSchema } = await import("../packages/shared/src/schemas.ts");
 
 const yearFromLabel = (label) => Number(String(label).match(/\d{4}/)?.[0] ?? NaN);
+const personStatuses = new Set(["active", "archived"]);
+const destinationKinds = new Set([
+  "big_tech",
+  "postgraduate_985",
+  "postgraduate_211",
+  "startup",
+  "further_study",
+  "other",
+]);
 
 test("演示树的每条师徒边都连接到存在的人物", () => {
   const peopleById = new Map(demoPeople.map((person) => [person.id, person]));
@@ -58,5 +68,51 @@ test("树节点、边和人物的 id 集合保持一致", () => {
   for (const edge of demoTree.edges) {
     assert.ok(demoTree.nodes.some((node) => node.id === edge.mentorId));
     assert.ok(demoTree.nodes.some((node) => node.id === edge.studentId));
+  }
+});
+
+test("成员状态保持存储兼容，去向值属于公开契约", () => {
+  for (const person of demoPeople) {
+    assert.ok(personStatuses.has(person.status), `${person.id} has unsupported status ${person.status}`);
+    assert.ok(
+      person.destination === null || destinationKinds.has(person.destination),
+      `${person.id} has unsupported destination ${person.destination}`,
+    );
+  }
+
+  assert.ok(demoPeople.some((person) => person.status === "active"), "demo data should cover active status");
+  assert.ok(demoPeople.some((person) => person.status === "archived"), "demo data should cover archived status");
+  for (const required of ["big_tech", "postgraduate_985", "postgraduate_211"]) {
+    assert.ok(demoPeople.some((person) => person.destination === required), `demo data should cover ${required}`);
+  }
+});
+
+test("树节点完整透传人物状态与去向", () => {
+  const nodesById = new Map(demoTree.nodes.map((node) => [node.id, node]));
+
+  for (const person of demoPeople) {
+    const node = nodesById.get(person.id);
+    assert.ok(node, `${person.id} should exist in demo tree`);
+    assert.equal(node.status, person.status);
+    assert.equal(node.destination, person.destination);
+  }
+});
+
+test("共享去向 Schema 接受约定枚举与空值并拒绝未知值", () => {
+  for (const destination of destinationKinds) {
+    assert.equal(destinationSchema.safeParse(destination).success, true, `${destination} should be valid`);
+  }
+  assert.equal(destinationSchema.nullable().safeParse(null).success, true);
+  assert.equal(destinationSchema.safeParse("unknown").success, false);
+});
+
+test("演示树中每位学生的深度比师傅大一层", () => {
+  const nodesById = new Map(demoTree.nodes.map((node) => [node.id, node]));
+
+  for (const edge of demoTree.edges) {
+    const mentor = nodesById.get(edge.mentorId);
+    const student = nodesById.get(edge.studentId);
+    assert.ok(mentor && student);
+    assert.equal(student.depth, mentor.depth + 1, `${student.id} should be one level below ${mentor.id}`);
   }
 });

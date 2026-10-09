@@ -1,8 +1,8 @@
 import { cors } from "hono/cors";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
-import { personSearchQuerySchema } from "../../../packages/shared/src/schemas";
-import { demoCohorts, demoPeople, demoTree, findCohort, findPerson, getChildren, toSummary } from "./data";
+import { personSearchQuerySchema } from "../../../packages/shared/src/schemas.ts";
+import { demoCohorts, demoPeople, demoTree, findCohort, findPerson, getChildren, toSummary } from "./data.ts";
 import type { Env } from "./types";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -61,7 +61,8 @@ app.get("/api/people/search", (c) => {
     return errorResponse("Invalid search parameters", "VALIDATION_ERROR", 400, fieldErrors);
   }
   const query = parsed.data.q.toLocaleLowerCase();
-  const matches = demoPeople.filter((person) => [person.name, person.nickname ?? "", person.role, person.generation, ...person.tags]
+  const destinationLabels = { big_tech: "大厂", postgraduate_985: "985研", postgraduate_211: "211研", startup: "创业", further_study: "继续深造", other: "其他" } as const;
+  const matches = demoPeople.filter((person) => [person.name, person.nickname ?? "", person.role, person.generation, person.status === "archived" ? "毕业" : "在读", person.destination ? destinationLabels[person.destination] : "", ...person.tags]
     .join(" ").toLocaleLowerCase().includes(query));
   const items = matches.slice(0, parsed.data.limit).map(toSummary);
   return c.json({ data: { items, total: matches.length }, meta: { demo: true, total: matches.length, limit: parsed.data.limit, query: parsed.data.q } });

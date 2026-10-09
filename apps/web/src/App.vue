@@ -4,20 +4,21 @@ import StarAvatar from "./components/StarAvatar.vue";
 import { mountStarfield, sparkle, type Starfield } from "./lib/starfield";
 
 type Status = "active" | "archived";
+type Destination = "big_tech" | "postgraduate_985" | "postgraduate_211" | "startup" | "further_study" | "other";
 type Cohort = { id: string; label: string; year: number | null; sortOrder: number };
-type Person = { id: string; name: string; nickname: string | null; avatarUrl: string | null; cohort: Cohort | null; relationScope: "lineage" | "cohort_guest"; isFeatured: boolean; status: Status; mentorId: string | null; depth: number | null; directStudentIds: string[]; role: string; joinedAt: string; tags: string[]; bio: string; mentor?: Person | null; students?: Person[]; achievements?: unknown[]; attachments?: unknown[]; featuredNote?: string | null };
+type Person = { id: string; name: string; nickname: string | null; avatarUrl: string | null; cohort: Cohort | null; relationScope: "lineage" | "cohort_guest"; isFeatured: boolean; status: Status; destination: Destination | null; mentorId: string | null; depth: number | null; directStudentIds: string[]; role: string; joinedAt: string; tags: string[]; bio: string; mentor?: Person | null; students?: Person[]; achievements?: unknown[]; attachments?: unknown[]; featuredNote?: string | null };
 type Edge = { id: string; mentorId: string; studentId: string };
 type Tree = { rootPersonId: string | null; nodes: Person[]; edges: Edge[]; generatedAt: string; demo: boolean };
 type LinkSegment = { id: string; mentorId: string; studentId: string; path: string; x1: number; y1: number; x2: number; y2: number; crossCohort: boolean };
 type Tone = "gold" | "aqua" | "fog";
 
 const fallbackPeople: Person[] = [
-  { id: "demo-person-001", name: "林砚", nickname: "砚叔", avatarUrl: null, cohort: { id: "cohort-2019", label: "2019 届", year: 2019, sortOrder: 0 }, relationScope: "lineage", isFeatured: true, status: "active", mentorId: null, depth: 0, directStudentIds: ["demo-person-002", "demo-person-003"], role: "发起人 / 产品顾问", joinedAt: "2019-06-18", tags: ["产品", "社区"], bio: "从一张白纸开始，记录每一次认真连接。" },
-  { id: "demo-person-002", name: "周予安", nickname: null, avatarUrl: null, cohort: { id: "cohort-2021", label: "2021 届", year: 2021, sortOrder: 1 }, relationScope: "lineage", isFeatured: false, status: "active", mentorId: "demo-person-001", depth: 1, directStudentIds: ["demo-person-004", "demo-person-005"], role: "全栈开发者", joinedAt: "2021-03-22", tags: ["工程", "开源"], bio: "喜欢把复杂的问题拆成可以一起走的路。" },
-  { id: "demo-person-003", name: "许棠", nickname: null, avatarUrl: null, cohort: { id: "cohort-2021", label: "2021 届", year: 2021, sortOrder: 1 }, relationScope: "lineage", isFeatured: false, status: "active", mentorId: "demo-person-001", depth: 1, directStudentIds: ["demo-person-006"], role: "研究与内容", joinedAt: "2021-04-08", tags: ["研究", "写作"], bio: "在资料、田野和人之间，寻找能被传下去的东西。" },
-  { id: "demo-person-004", name: "苏禾", nickname: null, avatarUrl: null, cohort: { id: "cohort-2023", label: "2023 届", year: 2023, sortOrder: 2 }, relationScope: "lineage", isFeatured: false, status: "active", mentorId: "demo-person-002", depth: 2, directStudentIds: [], role: "交互设计师", joinedAt: "2023-09-01", tags: ["设计", "体验"], bio: "让每一个重要的瞬间都被好好看见。" },
-  { id: "demo-person-005", name: "陈放", nickname: null, avatarUrl: null, cohort: { id: "cohort-2023", label: "2023 届", year: 2023, sortOrder: 2 }, relationScope: "lineage", isFeatured: false, status: "active", mentorId: "demo-person-002", depth: 2, directStudentIds: [], role: "数据工程师", joinedAt: "2023-10-12", tags: ["数据", "工具"], bio: "把看不见的结构，整理成可被理解的秩序。" },
-  { id: "demo-person-006", name: "唐宁", nickname: null, avatarUrl: null, cohort: { id: "cohort-2024", label: "2024 届", year: 2024, sortOrder: 3 }, relationScope: "lineage", isFeatured: false, status: "archived", mentorId: "demo-person-003", depth: 2, directStudentIds: [], role: "社会创新实践者", joinedAt: "2024-03-16", tags: ["公益", "组织"], bio: "在真实世界里验证每一个好想法。" },
+  { id: "demo-person-001", name: "林砚", nickname: "砚叔", avatarUrl: null, cohort: { id: "cohort-2019", label: "2019 届", year: 2019, sortOrder: 0 }, relationScope: "lineage", isFeatured: true, status: "archived", destination: "startup", mentorId: null, depth: 0, directStudentIds: ["demo-person-002", "demo-person-003"], role: "发起人 / 产品顾问", joinedAt: "2019-06-18", tags: ["产品", "社区"], bio: "从一张白纸开始，记录每一次认真连接。" },
+  { id: "demo-person-002", name: "周予安", nickname: null, avatarUrl: null, cohort: { id: "cohort-2021", label: "2021 届", year: 2021, sortOrder: 1 }, relationScope: "lineage", isFeatured: false, status: "archived", destination: "big_tech", mentorId: "demo-person-001", depth: 1, directStudentIds: ["demo-person-004", "demo-person-005"], role: "全栈开发者", joinedAt: "2021-03-22", tags: ["工程", "开源"], bio: "喜欢把复杂的问题拆成可以一起走的路。" },
+  { id: "demo-person-003", name: "许棠", nickname: null, avatarUrl: null, cohort: { id: "cohort-2021", label: "2021 届", year: 2021, sortOrder: 1 }, relationScope: "lineage", isFeatured: false, status: "archived", destination: "postgraduate_985", mentorId: "demo-person-001", depth: 1, directStudentIds: ["demo-person-006"], role: "研究与内容", joinedAt: "2021-04-08", tags: ["研究", "写作"], bio: "在资料、田野和人之间，寻找能被传下去的东西。" },
+  { id: "demo-person-004", name: "苏禾", nickname: null, avatarUrl: null, cohort: { id: "cohort-2023", label: "2023 届", year: 2023, sortOrder: 2 }, relationScope: "lineage", isFeatured: false, status: "archived", destination: "postgraduate_211", mentorId: "demo-person-002", depth: 2, directStudentIds: [], role: "交互设计师", joinedAt: "2023-09-01", tags: ["设计", "体验"], bio: "让每一个重要的瞬间都被好好看见。" },
+  { id: "demo-person-005", name: "陈放", nickname: null, avatarUrl: null, cohort: { id: "cohort-2023", label: "2023 届", year: 2023, sortOrder: 2 }, relationScope: "lineage", isFeatured: false, status: "archived", destination: "other", mentorId: "demo-person-002", depth: 2, directStudentIds: [], role: "数据工程师", joinedAt: "2023-10-12", tags: ["数据", "工具"], bio: "把看不见的结构，整理成可被理解的秩序。" },
+  { id: "demo-person-006", name: "唐宁", nickname: null, avatarUrl: null, cohort: { id: "cohort-2024", label: "2024 届", year: 2024, sortOrder: 3 }, relationScope: "lineage", isFeatured: false, status: "active", destination: "further_study", mentorId: "demo-person-003", depth: 2, directStudentIds: [], role: "社会创新实践者", joinedAt: "2024-03-16", tags: ["公益", "组织"], bio: "在真实世界里验证每一个好想法。" },
 ];
 const fallbackTree: Tree = { rootPersonId: "demo-person-001", nodes: fallbackPeople, edges: fallbackPeople.slice(1).map((person) => ({ id: `edge-${person.id}`, mentorId: person.mentorId!, studentId: person.id })), generatedAt: "2026-10-08T00:00:00.000Z", demo: true };
 
@@ -138,10 +139,21 @@ const layout = computed(() => {
 
 const rows = computed(() => groups.value.map((group) => ({ ...group, members: group.members.slice().sort((a, b) => (layout.value.offsets.get(a.id) ?? 0) - (layout.value.offsets.get(b.id) ?? 0)) })));
 const formatCohort = (cohort: Cohort | null) => cohort?.year ? `${cohort.year} 届` : "未分届次";
+const destinationLabels: Record<Destination, string> = {
+  big_tech: "大厂",
+  postgraduate_985: "985研",
+  postgraduate_211: "211研",
+  startup: "创业",
+  further_study: "继续深造",
+  other: "其他",
+};
+const isDestination = (value: unknown): value is Destination => typeof value === "string" && value in destinationLabels;
+const destinationLabel = (person: Person) => person.destination ? destinationLabels[person.destination] : "去向待补充";
+const destinationClass = (person: Person) => person.destination ? `destination-${person.destination}` : "destination-unset";
 const matchingIds = computed(() => {
   const text = query.value.trim().toLocaleLowerCase();
   if (!text) return new Set(people.value.map((person) => person.id));
-  return new Set(people.value.filter((person) => [person.name, person.nickname ?? "", person.role, formatCohort(person.cohort), ...person.tags].join(" ").toLocaleLowerCase().includes(text)).map((person) => person.id));
+  return new Set(people.value.filter((person) => [person.name, person.nickname ?? "", person.role, formatCohort(person.cohort), person.status === "archived" ? "毕业" : "在读", person.destination ? destinationLabels[person.destination] : "", ...person.tags].join(" ").toLocaleLowerCase().includes(text)).map((person) => person.id));
 });
 const detailRouteId = computed(() => {
   const match = pathname.value.match(/^\/person\/([^/]+)/);
@@ -166,7 +178,7 @@ const detailStudents = computed(() => {
 });
 const visibleLinks = computed(() => links.value.filter((link) => !query.value || matchingIds.value.has(link.mentorId) || matchingIds.value.has(link.studentId)));
 const isVisible = (person: Person) => matchingIds.value.has(person.id);
-const relationLabel = (person: Person) => person.status === "archived" ? "已归档" : person.relationScope === "cohort_guest" ? "同届人物" : "在册成员";
+const relationLabel = (person: Person) => person.status === "archived" ? "毕业" : "在读";
 const toneOf = (person: Person): Tone => person.status === "archived" ? "fog" : person.isFeatured || person.id === rootPerson.value?.id ? "gold" : "aqua";
 const isLinkActive = (link: LinkSegment) => hoveredId.value !== null && (link.mentorId === hoveredId.value || link.studentId === hoveredId.value);
 
@@ -182,7 +194,8 @@ function normaliseNode(node: Record<string, unknown>, index: number): Person {
   const year = rawYear ? Number(rawYear) : (fallbackCohort?.year ?? null);
   const cohort = rawCohort || fallbackCohort ? { ...(fallbackCohort ?? {}), ...(rawCohort ?? {}), id: year ? `cohort-${year}` : String(rawCohort?.id ?? fallbackCohort?.id ?? "uncategorized"), label: year ? `${year} 届` : "未分届次", year, sortOrder: Number(rawCohort?.sortOrder ?? fallbackCohort?.sortOrder ?? 99) } as Cohort : null;
   const directStudentIds = Array.isArray(node.directStudentIds) ? node.directStudentIds.map(String) : source.directStudentIds;
-  return { ...source, ...node, id: String(node.id ?? source.id), name: String(node.name ?? source.name), cohort, mentorId: node.mentorId == null ? source.mentorId : String(node.mentorId), directStudentIds, nickname: node.nickname == null ? source.nickname : String(node.nickname), avatarUrl: node.avatarUrl == null ? source.avatarUrl : String(node.avatarUrl), role: String(node.role ?? source.role), joinedAt: String(node.joinedAt ?? source.joinedAt), tags: Array.isArray(node.tags) ? node.tags.map(String) : source.tags, bio: String(node.bio ?? source.bio) } as Person;
+  const destination = isDestination(node.destination) ? node.destination : null;
+  return { ...source, ...node, id: String(node.id ?? source.id), name: String(node.name ?? source.name), cohort, destination, mentorId: node.mentorId == null ? source.mentorId : String(node.mentorId), directStudentIds, nickname: node.nickname == null ? source.nickname : String(node.nickname), avatarUrl: node.avatarUrl == null ? source.avatarUrl : String(node.avatarUrl), role: String(node.role ?? source.role), joinedAt: String(node.joinedAt ?? source.joinedAt), tags: Array.isArray(node.tags) ? node.tags.map(String) : source.tags, bio: String(node.bio ?? source.bio) } as Person;
 }
 async function loadTree() {
   loading.value = true;
@@ -190,11 +203,11 @@ async function loadTree() {
     const response = await fetch("/api/tree");
     if (!response.ok) throw new Error("tree unavailable");
     const payload = await response.json() as { data?: { nodes?: Record<string, unknown>[]; edges?: Edge[]; rootPersonId?: string; generatedAt?: string; demo?: boolean } };
-    if (!payload.data?.nodes?.length) throw new Error("invalid tree");
+    if (!Array.isArray(payload.data?.nodes)) throw new Error("invalid tree");
     const nodes = payload.data.nodes.map(normaliseNode);
     const ids = new Set(nodes.map((person) => person.id));
     const edges = (payload.data.edges ?? []).filter((edge) => ids.has(edge.mentorId) && ids.has(edge.studentId)).map((edge) => ({ id: String(edge.id ?? `${edge.mentorId}::${edge.studentId}`), mentorId: String(edge.mentorId), studentId: String(edge.studentId) }));
-    tree.value = { rootPersonId: payload.data.rootPersonId && ids.has(payload.data.rootPersonId) ? payload.data.rootPersonId : nodes[0].id, nodes, edges, generatedAt: payload.data.generatedAt ?? new Date().toISOString(), demo: Boolean(payload.data.demo) };
+    tree.value = { rootPersonId: payload.data.rootPersonId && ids.has(payload.data.rootPersonId) ? payload.data.rootPersonId : (nodes[0]?.id ?? null), nodes, edges, generatedAt: payload.data.generatedAt ?? new Date().toISOString(), demo: Boolean(payload.data.demo) };
     apiFailed.value = false;
   } catch {
     apiFailed.value = true;
@@ -392,22 +405,26 @@ onUnmounted(() => {
       <section class="toolbar">
         <label class="search-field">
           <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4.5 4.5" /></svg>
-          <input v-model="query" type="search" placeholder="搜索姓名、方向或届次" aria-label="搜索姓名、方向或届次" />
+          <input v-model="query" type="search" placeholder="搜索姓名、方向、届次或去向" aria-label="搜索姓名、方向、届次或去向" />
           <button v-if="query" type="button" aria-label="清空搜索" @click="query = ''">×</button>
         </label>
         <div class="legend">
           <span v-if="query" class="legend-count">匹配 {{ matchingIds.size }} 颗星</span>
-          <span class="legend-item"><i class="legend-star gold"></i>星源 / 重点</span>
-          <span class="legend-item"><i class="legend-star aqua"></i>在册</span>
-          <span class="legend-item"><i class="legend-star fog"></i>已归档</span>
+          <span class="legend-item"><i class="legend-star aqua"></i>在读</span>
+          <span class="legend-item"><i class="legend-star fog"></i>毕业</span>
+          <span class="legend-item destination-key destination-big_tech"><i></i>大厂</span>
+          <span class="legend-item destination-key destination-postgraduate_985"><i></i>985研</span>
+          <span class="legend-item destination-key destination-postgraduate_211"><i></i>211研</span>
           <span class="legend-item"><i class="legend-line"></i>传承轨迹</span>
         </div>
       </section>
       <section ref="stageRef" class="star-stage" aria-label="成员星谱">
         <div v-if="loading" class="state-message"><span class="loading-ring"></span>正在整理星谱</div>
         <template v-else>
+          <div v-if="apiFailed" class="state-message" role="status">连接暂时中断，当前显示本地演示资料。<button class="back-link" type="button" @click="loadTree">重新连接</button></div>
+          <div v-if="!people.length" class="state-message empty">星谱中还没有人物档案。</div>
           <div class="star-stage-meta"><span>ROOT TO CONSTELLATION</span><span>更新于 {{ tree.generatedAt.slice(0, 10) }}</span></div>
-          <div ref="scrollRef" class="tree-scroll" @scroll.passive="onTreeScroll">
+          <div v-if="people.length" ref="scrollRef" class="tree-scroll" @scroll.passive="onTreeScroll">
             <div ref="canvasRef" class="tree-canvas" :style="{ '--span': layout.span }" @animationend="onStarSettled">
               <svg class="line-layer" :width="canvasSize.width" :height="canvasSize.height" :viewBox="`0 0 ${canvasSize.width} ${canvasSize.height}`" aria-hidden="true">
                 <defs>
@@ -448,10 +465,10 @@ onUnmounted(() => {
                     :key="person.id"
                     :ref="(el) => setNodeRef(person.id, el as Element)"
                     class="star-node"
-                    :class="{ dimmed: query && !isVisible(person), highlighted: query && isVisible(person), root: person.id === rootPerson?.id, guest: person.relationScope === 'cohort_guest', selected: selectedPerson?.id === person.id }"
+                    :class="[destinationClass(person), { dimmed: query && !isVisible(person), highlighted: query && isVisible(person), root: person.id === rootPerson?.id, guest: person.relationScope === 'cohort_guest', selected: selectedPerson?.id === person.id }]"
                     :style="{ '--x': layout.offsets.get(person.id) ?? 0, '--delay': `${rowIndex * 140 + index * 60}ms` }"
                     type="button"
-                    :aria-label="`${person.name}，${formatCohort(person.cohort)}`"
+                    :aria-label="`${person.name}，${formatCohort(person.cohort)}，${relationLabel(person)}${person.destination ? `，去向${destinationLabel(person)}` : ''}`"
                     :aria-expanded="selectedPerson?.id === person.id"
                     @click="openPreview(person)"
                     @mouseenter="hoveredId = person.id"
@@ -461,7 +478,7 @@ onUnmounted(() => {
                   >
                     <StarAvatar :name="person.name" :avatar-url="person.avatarUrl" :tone="toneOf(person)" :size="person.id === rootPerson?.id ? 'lg' : 'md'" />
                     <span class="star-name">{{ person.name }}</span>
-                    <span v-if="person.id === rootPerson?.id" class="star-badge">星源</span>
+                    <span v-if="person.destination" class="destination-badge">{{ destinationLabel(person) }}</span>
                   </button>
                 </div>
               </div>
@@ -486,6 +503,7 @@ onUnmounted(() => {
               </div>
             </div>
             <p class="popover-copy">{{ selectedPerson.bio }}</p>
+            <span v-if="selectedPerson.destination" class="destination-badge popover-destination" :class="destinationClass(selectedPerson)">去向 · {{ destinationLabel(selectedPerson) }}</span>
             <div class="tag-row compact"><span v-for="tag in selectedPerson.tags" :key="tag" class="tag">{{ tag }}</span></div>
             <button class="popover-detail" type="button" @click="viewDetail(selectedPerson)">查看完整档案 <span aria-hidden="true">↗</span></button>
           </div>
@@ -503,8 +521,9 @@ onUnmounted(() => {
           </div>
           <h1>{{ detail.name }}</h1>
           <p class="detail-role">{{ detail.role }}</p>
+          <span v-if="detail.destination" class="destination-badge detail-destination" :class="destinationClass(detail)">去向 · {{ destinationLabel(detail) }}</span>
           <div class="tag-row"><span v-for="tag in detail.tags" :key="tag" class="tag">{{ tag }}</span></div>
-          <span class="record-note"><i></i>{{ relationLabel(detail) }} · 演示档案</span>
+          <span class="record-note" :class="{ graduated: detail.status === 'archived' }"><i></i>{{ relationLabel(detail) }} · 演示档案</span>
         </section>
         <section class="detail-sections">
           <article class="detail-section">

@@ -11,7 +11,7 @@
     "dev:api": "pnpm --dir apps/api dev",
     "build": "pnpm --dir apps/web build && pnpm --dir apps/api build",
     "build:api": "pnpm --dir apps/api build",
-    "test:contracts": "node --experimental-strip-types --test tests/demo-contract.test.mjs"
+    "test:contracts": "node --experimental-strip-types --test tests/demo-contract.test.mjs tests/lineage.test.mjs"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

@@ -3,6 +3,7 @@ export {
   idSchema,
   relationScopeSchema,
   personStatusSchema,
+  destinationSchema,
   datePrecisionSchema,
   achievementKindSchema,
   treeQuerySchema,

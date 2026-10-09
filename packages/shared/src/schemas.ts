@@ -3,6 +3,7 @@ import { z } from "zod";
 export const idSchema = z.string().trim().min(1).max(128);
 export const relationScopeSchema = z.enum(["lineage", "cohort_guest"]);
 export const personStatusSchema = z.enum(["active", "archived"]);
+export const destinationSchema = z.enum(["big_tech", "postgraduate_985", "postgraduate_211", "startup", "further_study", "other"]);
 export const datePrecisionSchema = z.enum(["year", "month", "day"]);
 export const achievementKindSchema = z.enum(["achievement", "honor"]);
 
