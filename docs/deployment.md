@@ -91,7 +91,7 @@ pnpm --dir apps/web build
 pnpm --dir apps/api exec wrangler pages deploy ../../apps/web/dist --project-name fandou-xingpu
 ```
 
-Pages 和 Worker 使用同一自定义域名。`wrangler.production.toml` 中的 Worker route 只接管 `xingpu.example.com/api/*`，其他路径由 Pages 提供；`public/_redirects` 将 `/person/*`、`/register` 和 `/admin` 等前端路由回退到 `index.html`。这样浏览器继续使用相对 `/api`，不需要把 API 地址写进前端产物。
+Pages 使用 `apps/web/wrangler.toml` 中的 Service Binding 将同源 `/api/*` 转发到 `fandou-xingpu-api` Worker；无需自定义域名即可使用 Pages 域名。`public/_redirects` 将 `/person/*`、`/register` 和 `/admin` 等前端路由回退到 `index.html`。这样浏览器继续使用相对 `/api`，不需要把 API 地址写进前端产物。R2 启用后再把 `FILES` bucket 绑定补到生产 Worker 配置。
 
 上线前执行：
 
