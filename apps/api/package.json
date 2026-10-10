@@ -3,11 +3,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "wrangler dev -c wrangler.local.toml",
+    "dev:memory": "wrangler dev",
     "dev:d1": "wrangler dev -c wrangler.local.toml",
     "db:migrate:local": "wrangler d1 migrations apply DB --local -c wrangler.local.toml",
+    "db:bootstrap:local": "node --experimental-strip-types scripts/bootstrap-local-admin.mjs",
+    "db:admin-sql:production": "node --experimental-strip-types scripts/generate-production-admin-sql.mjs",
     "build": "tsc --noEmit",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy -c wrangler.production.toml"
   },
   "dependencies": {
     "hono": "^4.6.12"

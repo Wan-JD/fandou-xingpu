@@ -7,8 +7,16 @@
     "packages/*"
   ],
   "scripts": {
+    "dev": "node scripts/dev-local.mjs",
     "dev:web": "pnpm --dir apps/web dev",
     "dev:api": "pnpm --dir apps/api dev",
+    "db:migrate:local": "pnpm --dir apps/api db:migrate:local",
+    "db:bootstrap:local": "pnpm --dir apps/api db:bootstrap:local",
+    "db:admin-sql:production": "pnpm --dir apps/api db:admin-sql:production",
+    "db:backup:local": "node scripts/backup-local-db.mjs",
+    "db:restore:local": "node scripts/restore-local-db.mjs",
+    "test:integration:local": "node scripts/smoke-local.mjs",
+    "test:integration:isolated": "node scripts/verify-isolated.mjs",
     "build": "pnpm --dir packages/shared typecheck && pnpm --dir apps/web build && pnpm --dir apps/api build",
     "build:api": "pnpm --dir apps/api build",
     "test:contracts": "node --experimental-strip-types --test tests/demo-contract.test.mjs tests/lineage.test.mjs tests/account.test.mjs tests/invite.test.mjs"

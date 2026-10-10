@@ -2,6 +2,7 @@ export interface Env {
   API_ENV?: string;
   ALLOWED_ORIGIN?: string;
   DB?: D1Database;
+  FILES?: R2Bucket;
 }
 
 export interface Person {
@@ -25,6 +26,7 @@ export interface Cohort {
   id: string;
   name: string;
   year: number;
+  sortOrder?: number;
   memberCount: number;
   description: string;
 }

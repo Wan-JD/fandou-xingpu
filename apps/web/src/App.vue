@@ -2,13 +2,16 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import InvitePanel from "./components/InvitePanel.vue";
 import InviteRegistration from "./components/InviteRegistration.vue";
+import AdminPanel from "./components/AdminPanel.vue";
 import StarAvatar from "./components/StarAvatar.vue";
 import { mountStarfield, sparkle, type Starfield } from "./lib/starfield";
 
 type Status = "active" | "archived";
 type Destination = "big_tech" | "postgraduate_985" | "postgraduate_211" | "startup" | "further_study" | "other";
 type Cohort = { id: string; label: string; year: number | null; sortOrder: number };
-type Person = { id: string; name: string; nickname: string | null; avatarUrl: string | null; cohort: Cohort | null; relationScope: "lineage" | "cohort_guest"; isFeatured: boolean; status: Status; destination: Destination | null; mentorId: string | null; depth: number | null; directStudentIds: string[]; role: string; joinedAt: string; tags: string[]; bio: string; version?: number; mentor?: Person | null; students?: Person[]; achievements?: unknown[]; attachments?: unknown[]; featuredNote?: string | null };
+type Achievement = { id: string; kind: "achievement" | "honor"; title: string; content: string; occurredOn: string | null; version: number };
+type Attachment = { id: string; originalName: string; mimeType: string; size: number; category: string; visibility: string; url: string | null };
+type Person = { id: string; name: string; nickname: string | null; avatarUrl: string | null; cohort: Cohort | null; relationScope: "lineage" | "cohort_guest"; isFeatured: boolean; status: Status; destination: Destination | null; mentorId: string | null; depth: number | null; directStudentIds: string[]; role: string; joinedAt: string; tags: string[]; bio: string; version?: number; mentor?: Person | null; students?: Person[]; achievements?: Achievement[]; attachments?: Attachment[]; featuredNote?: string | null };
 type Edge = { id: string; mentorId: string; studentId: string };
 type Tree = { rootPersonId: string | null; nodes: Person[]; edges: Edge[]; generatedAt: string; demo: boolean };
 type LinkSegment = { id: string; mentorId: string; studentId: string; path: string; x1: number; y1: number; x2: number; y2: number; crossCohort: boolean };
@@ -54,12 +57,16 @@ const authOpen = ref(false);
 const authMode = ref<AuthMode>("login");
 const authLoading = ref(false);
 const authError = ref<string | null>(null);
-const authForm = ref({ email: "demo@fandou.local", password: "demo1234" });
+const authForm = ref({ email: "", password: "" });
 const profileEditing = ref(false);
 const profileSaving = ref(false);
 const profileError = ref<string | null>(null);
 const profileSaved = ref(false);
 const profileForm = ref<{ nickname: string; bio: string; destination: Destination | "" }>({ nickname: "", bio: "", destination: "" });
+const achievementForm = ref({ kind: "achievement" as "achievement" | "honor", title: "", content: "" });
+const achievementSaving = ref(false);
+const uploadSaving = ref(false);
+const uploadError = ref("");
 let starfield: Starfield | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let centeredOnce = false;
@@ -179,6 +186,7 @@ const detailRouteId = computed(() => {
 });
 const isDetailRoute = computed(() => Boolean(detailRouteId.value));
 const isRegisterRoute = computed(() => pathname.value === "/register");
+const isAdminRoute = computed(() => pathname.value === "/admin");
 const inviteToken = computed(() => new URLSearchParams(window.location.search).get("invite") ?? "");
 const currentDetail = computed(() => detailRouteId.value ? people.value.find((person) => person.id === detailRouteId.value) ?? null : null);
 const detail = computed(() => detailPerson.value ?? currentDetail.value);
@@ -196,6 +204,8 @@ const detailStudents = computed(() => {
   tree.value.edges.forEach((edge) => { if (edge.mentorId === person.id) ids.add(edge.studentId); });
   return [...ids].map((id) => people.value.find((candidate) => candidate.id === id)).filter((candidate): candidate is Person => Boolean(candidate));
 });
+const detailAchievements = computed(() => detail.value?.achievements ?? []);
+const detailAttachments = computed(() => detail.value?.attachments ?? []);
 const visibleLinks = computed(() => links.value.filter((link) => !query.value || matchingIds.value.has(link.mentorId) || matchingIds.value.has(link.studentId)));
 const isVisible = (person: Person) => matchingIds.value.has(person.id);
 const relationLabel = (person: Person) => person.status === "archived" ? "毕业" : "在读";
@@ -207,7 +217,11 @@ function setNodeRef(id: string, element: Element | null) {
   else nodeRefs.delete(id);
 }
 function normaliseNode(node: Record<string, unknown>, index: number): Person {
-  const source = fallbackPeople.find((person) => person.id === node.id) ?? fallbackPeople[index % fallbackPeople.length];
+  const source = fallbackPeople.find((person) => person.id === node.id) ?? {
+    id: String(node.id ?? `remote-person-${index}`), name: String(node.name ?? "未命名成员"), nickname: null, avatarUrl: null,
+    cohort: null, relationScope: "cohort_guest" as const, isFeatured: false, status: "active" as const, destination: null,
+    mentorId: null, depth: null, directStudentIds: [], role: "星谱成员", joinedAt: "", tags: [], bio: "",
+  };
   const rawCohort = node.cohort as Partial<Cohort> | null | undefined;
   const fallbackCohort = source.cohort;
   const rawYear = rawCohort?.year ?? String(rawCohort?.label ?? "").match(/\d{4}/)?.[0];
@@ -277,7 +291,7 @@ async function loadSession() {
 function setAuthMode(mode: AuthMode) {
   authMode.value = mode;
   authError.value = null;
-  if (mode === "login") authForm.value = { email: "demo@fandou.local", password: "demo1234" };
+  if (mode === "login") authForm.value = { email: "", password: "" };
 }
 function openAuth(mode: AuthMode = "login") {
   setAuthMode(mode);
@@ -363,6 +377,32 @@ async function saveProfile() {
   } finally {
     profileSaving.value = false;
   }
+}
+async function addAchievement() {
+  if (!sessionToken.value || !isOwnDetail.value || !achievementForm.value.title.trim() || !achievementForm.value.content.trim()) return;
+  achievementSaving.value = true; uploadError.value = "";
+  try {
+    const response = await fetch("/api/me/achievements", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${sessionToken.value}` }, body: JSON.stringify(achievementForm.value) });
+    if (!response.ok) throw new Error(await apiErrorMessage(response, "事迹保存失败"));
+    const payload = await response.json() as { data?: Achievement };
+    if (payload.data && detailPerson.value) detailPerson.value = { ...detailPerson.value, achievements: [payload.data, ...(detailPerson.value.achievements ?? [])] };
+    achievementForm.value = { kind: "achievement", title: "", content: "" };
+  } catch (error) { uploadError.value = error instanceof Error ? error.message : "事迹保存失败"; }
+  finally { achievementSaving.value = false; }
+}
+async function uploadAttachment(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file || !sessionToken.value || !isOwnDetail.value) return;
+  uploadSaving.value = true; uploadError.value = "";
+  try {
+    const form = new FormData(); form.append("file", file); form.append("category", file.type === "application/pdf" ? "resume" : "photo"); form.append("visibility", "members");
+    const response = await fetch("/api/me/attachments", { method: "POST", headers: { Authorization: `Bearer ${sessionToken.value}` }, body: form });
+    if (!response.ok) throw new Error(await apiErrorMessage(response, "附件上传失败"));
+    const payload = await response.json() as { data?: Attachment };
+    if (payload.data && detailPerson.value) detailPerson.value = { ...detailPerson.value, attachments: [payload.data, ...(detailPerson.value.attachments ?? [])] };
+  } catch (error) { uploadError.value = error instanceof Error ? error.message : "附件上传失败"; }
+  finally { uploadSaving.value = false; input.value = ""; }
 }
 function toggleGroup(id: string) {
   expanded.value[id] = expanded.value[id] === false;
@@ -536,17 +576,22 @@ onUnmounted(() => {
       <div class="header-meta">
         <span class="status-dot" :class="{ offline: apiFailed }"></span>
         <span>{{ apiFailed ? "本地演示资料" : "星谱已连接" }}</span>
-        <span class="read-only">只读档案</span>
+        <span class="read-only">{{ tree.demo ? "演示资料" : "公开档案" }}</span>
         <button class="account-entry" type="button" :disabled="sessionLoading" @click="openMyProfile">
           <span class="account-orb" aria-hidden="true"></span>
           {{ sessionLoading ? "读取账号" : (sessionUser?.displayName ?? "登录 / 加入") }}
         </button>
         <button v-if="sessionUser" class="account-logout" type="button" aria-label="退出登录" @click="logout">退出</button>
+        <a v-if="sessionUser?.role === 'admin'" class="account-logout" href="/admin" @click.prevent="navigate('/admin')">管理</a>
       </div>
     </header>
 
     <main v-if="isRegisterRoute" class="detail-page" aria-live="polite">
       <InviteRegistration :token="inviteToken" />
+    </main>
+    <main v-else-if="isAdminRoute" class="detail-page" aria-live="polite">
+      <AdminPanel v-if="sessionUser?.role === 'admin' && sessionToken" :session-token="sessionToken" @changed="loadTree" />
+      <section v-else class="state-message" role="status"><p>管理员账号登录后才能打开维护工作台。</p><button type="button" @click="() => openAuth()">登录管理员账号</button></section>
     </main>
     <main v-else-if="!isDetailRoute" class="home-page">
       <section class="hero">
@@ -671,7 +716,7 @@ onUnmounted(() => {
           </div>
         </template>
       </section>
-      <footer class="page-footer"><span>翻斗星谱 · 早期演示版</span><span>资料仅用于界面演示，真实成员档案接入中</span></footer>
+      <footer class="page-footer"><span>翻斗星谱 · {{ tree.demo ? "早期演示版" : "公开档案" }}</span><span>{{ tree.demo ? "资料仅用于界面演示，真实成员档案接入中" : "成员资料持续更新中" }}</span></footer>
     </main>
     <main v-else class="detail-page" aria-live="polite">
       <button class="back-link" type="button" @click="navigate('/')">← 返回星谱</button>
@@ -686,7 +731,7 @@ onUnmounted(() => {
           <p class="detail-role">{{ detail.role }}</p>
           <span v-if="detail.destination" class="destination-badge detail-destination" :class="destinationClass(detail)">去向 · {{ destinationLabel(detail) }}</span>
           <div class="tag-row"><span v-for="tag in detail.tags" :key="tag" class="tag">{{ tag }}</span></div>
-          <span class="record-note" :class="{ graduated: detail.status === 'archived' }"><i></i>{{ relationLabel(detail) }} · 演示档案</span>
+          <span class="record-note" :class="{ graduated: detail.status === 'archived' }"><i></i>{{ relationLabel(detail) }} · {{ tree.demo ? "演示资料" : "公开档案" }}</span>
           <button v-if="isOwnDetail" class="profile-edit-trigger" type="button" @click="startProfileEdit">编辑我的资料</button>
           <p v-if="isOwnDetail && profileSaved" class="profile-success" role="status">资料已保存</p>
         </section>
@@ -740,7 +785,17 @@ onUnmounted(() => {
           </article>
           <article class="detail-section">
             <span class="section-label">04 / 事迹与附件</span>
-            <div class="empty-detail"><span>＋</span><p>尚未添加事迹、荣誉或附件。</p></div>
+            <div v-if="detailAchievements.length || detailAttachments.length" class="profile-content-list">
+              <article v-for="item in detailAchievements" :key="item.id" class="content-item"><strong>{{ item.kind === 'honor' ? '荣誉' : '事迹' }} · {{ item.title }}</strong><p>{{ item.content }}</p></article>
+              <a v-for="item in detailAttachments" :key="item.id" class="content-item attachment-item" :href="item.url ?? `/api/attachments/${item.id}`" target="_blank" rel="noreferrer">{{ item.originalName }} <span>· {{ item.visibility === 'private' ? '仅自己可见' : '成员可见' }}</span></a>
+            </div>
+            <div v-else class="empty-detail"><span>＋</span><p>尚未添加事迹、荣誉或附件。</p></div>
+            <form v-if="isOwnDetail && sessionToken" class="content-editor" @submit.prevent="addAchievement">
+              <div class="content-editor-row"><select v-model="achievementForm.kind"><option value="achievement">事迹</option><option value="honor">荣誉</option></select><input v-model.trim="achievementForm.title" maxlength="200" placeholder="标题" required /></div>
+              <textarea v-model.trim="achievementForm.content" maxlength="20000" rows="3" placeholder="写下这段经历" required></textarea>
+              <div class="form-actions"><label class="upload-button">{{ uploadSaving ? '上传中…' : '上传附件' }}<input type="file" accept="image/jpeg,image/png,image/webp,application/pdf" :disabled="uploadSaving" @change="uploadAttachment" /></label><button class="primary-command" type="submit" :disabled="achievementSaving">{{ achievementSaving ? '保存中…' : '添加记录' }}</button></div>
+              <p v-if="uploadError" class="form-error" role="alert">{{ uploadError }}</p>
+            </form>
           </article>
           <InvitePanel v-if="isOwnDetail && sessionToken" :mentor-id="detail.id" :mentor-name="detail.name" :session-token="sessionToken" />
         </section>

@@ -14,6 +14,7 @@ const nickname = ref("");
 const email = ref("");
 const password = ref("");
 const acceptedName = ref("");
+const needsToken = ref(!props.token);
 
 const errorText = (code?: string) => ({
   INVITE_EXPIRED: "这枚邀请已经过期，请联系师傅重新生成。",
@@ -26,7 +27,7 @@ async function loadInvite() {
   loading.value = true;
   error.value = "";
   if (!activeToken.value) {
-    error.value = "邀请链接缺少 token。";
+    needsToken.value = true;
     loading.value = false;
     return;
   }
@@ -35,6 +36,7 @@ async function loadInvite() {
     const payload = await response.json() as { data?: { status: string; mentor: Mentor }; error?: { code?: string } };
     if (!response.ok || !payload.data) throw new Error(errorText(payload.error?.code));
     mentor.value = payload.data.mentor;
+    needsToken.value = false;
     if (payload.data.status === "accepted") error.value = "这枚邀请已经被使用。";
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : errorText();
@@ -66,7 +68,13 @@ async function acceptInvite() {
 }
 
 function checkManualToken() {
-  activeToken.value = manualToken.value.trim();
+  const pasted = manualToken.value.trim();
+  try {
+    const url = new URL(pasted);
+    activeToken.value = url.searchParams.get("invite") ?? pasted;
+  } catch {
+    activeToken.value = pasted;
+  }
   void loadInvite();
 }
 
@@ -83,6 +91,13 @@ onMounted(loadInvite);
       <p><strong>{{ acceptedName }}</strong> 已成为 <strong>{{ mentor?.name }}</strong> 的徒弟，新的师徒关系已经记录。</p>
       <p>账号已经建立并自动登录。</p>
       <a class="register-action" href="/">查看星谱</a>
+    </div>
+    <div v-else-if="needsToken" class="register-card status">
+      <span class="register-kicker">JOIN THE CONSTELLATION</span>
+      <h1>输入师傅的邀请码</h1>
+      <p>粘贴师傅发来的邀请链接或邀请码，确认后继续注册。</p>
+      <label class="manual-token">邀请码<input v-model.trim="manualToken" autocomplete="off" placeholder="粘贴邀请链接或邀请码" /></label>
+      <button class="register-action" type="button" :disabled="!manualToken" @click="checkManualToken">确认邀请</button>
     </div>
     <div v-else-if="error" class="register-card status" role="alert">
       <span class="register-kicker">INVITATION UNAVAILABLE</span>

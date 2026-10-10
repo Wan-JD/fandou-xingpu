@@ -3,6 +3,8 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { personSearchQuerySchema } from "../../../packages/shared/src/schemas.ts";
 import { accountApi, getProfileMetadata } from "./account-api.ts";
+import contentApi, { attachmentApi } from "./content-api.ts";
+import { adminApi } from "./admin-api.ts";
 import { demoCohorts, demoPeople, demoTree, findCohort, findPerson, getChildren, toSummary } from "./data.ts";
 import { inviteApi } from "./invites.ts";
 import { persistence } from "./persistence.ts";
@@ -56,7 +58,10 @@ app.get("/api/health", (c) => c.json({
 }));
 
 app.route("/api/invites", inviteApi);
+app.route("/api/admin", adminApi);
 app.route("/api", accountApi);
+app.route("/api/me", contentApi);
+app.route("/api/attachments", attachmentApi);
 
 app.get("/api/tree", async (c) => {
   if (c.env?.DB) {
@@ -87,7 +92,8 @@ app.get("/api/people/search", async (c) => {
 
 app.get("/api/people/:id", async (c) => {
   if (c.env?.DB) {
-    const person = await persistence(c.env.DB).personDetail(c.req.param("id"));
+    const viewer = await persistence(c.env.DB).session(c.req.header("Authorization"));
+    const person = await persistence(c.env.DB).personDetail(c.req.param("id"), viewer ? { userId: viewer.user.id, personId: viewer.user.personId, role: viewer.user.role } : undefined);
     if (!person) return errorResponse("Person not found", "PERSON_NOT_FOUND", 404);
     return c.json({ data: person, meta: { demo: false } });
   }

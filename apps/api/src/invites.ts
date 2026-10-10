@@ -78,7 +78,17 @@ const publicPersistentInvite = (record: PersistentInvite, mentor: Record<string,
   createdAt: record.createdAt,
   expiresAt: record.expiresAt,
   acceptedAt: record.acceptedAt,
-  mentor,
+  mentor: mentor ? {
+    id: mentor.id,
+    name: mentor.name,
+    nickname: mentor.nickname ?? null,
+    avatarUrl: mentor.avatarUrl ?? null,
+    cohort: mentor.cohort ?? null,
+    relationScope: mentor.relationScope,
+    isFeatured: mentor.isFeatured,
+    status: mentor.status,
+    destination: mentor.destination ?? null,
+  } : null,
 });
 
 export const inviteApi = new Hono<{ Bindings: Env }>();
@@ -93,10 +103,13 @@ inviteApi.post("/", async (c) => {
   if (store) {
     const mentor = await store.personDetail(mentorId);
     if (!mentor) return apiError(404, "MENTOR_NOT_FOUND", "Mentor not found");
+    if (mentor.relationScope !== "lineage") return apiError(409, "MENTOR_NOT_LINEAGE", "Only lineage members can invite students");
     const record = await store.createInvite(mentorId, session.user.id);
     return c.json({ data: publicPersistentInvite(record, mentor), meta: { demo: false } }, 201);
   }
-  if (!findPerson(mentorId)) return apiError(404, "MENTOR_NOT_FOUND", "Mentor not found");
+  const mentor = findPerson(mentorId);
+  if (!mentor) return apiError(404, "MENTOR_NOT_FOUND", "Mentor not found");
+  if (mentor.relationScope !== "lineage") return apiError(409, "MENTOR_NOT_LINEAGE", "Only lineage members can invite students");
   const record = createInviteRecord(mentorId);
   return c.json({ data: publicInvite(record), meta: { demo: true } }, 201);
 });

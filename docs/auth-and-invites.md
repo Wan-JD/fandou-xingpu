@@ -4,7 +4,7 @@
 
 ## 使用流程
 
-1. 师傅登录演示账号 `demo@fandou.local`（密码 `demo1234`），或使用已经存在的成员账号。
+1. 师傅使用已经存在的成员账号登录。本地 D1 可保留虚构演示成员账号；生产环境不提供公开演示密码。
 2. 打开自己的个人详情，点击“生成邀请链接”，把链接或其中的邀请码发给徒弟。
 3. 徒弟打开 `/register?invite=<token>`，也可以直接访问 `/register` 后手动粘贴邀请码。
 4. 邀请页展示师傅届次和姓名。提交姓名、昵称、邮箱和密码后，账号、人物档案和 mentor 关系一起创建。
@@ -24,13 +24,18 @@
 
 ## 存储
 
-默认 `wrangler.toml` 保持公开演示模式；`apps/api/wrangler.local.toml` 绑定本地 D1。执行：
+根目录 `pnpm dev` 默认使用 `apps/api/wrangler.local.toml` 绑定本地 D1，并自动执行迁移。首次创建本地管理员：
 
-```sh
-pnpm --dir apps/api db:migrate:local
-pnpm --dir apps/api dev:d1
+```powershell
+$env:ADMIN_EMAIL="admin@fandou.local"
+$env:ADMIN_PASSWORD="至少8位的本地密码"
+$env:ADMIN_NAME="本地管理员"
+pnpm db:bootstrap:local
+pnpm dev
 ```
 
 本地 D1 使用 `database/migrations/0003_auth_and_persistence.sql` 保存账号哈希、会话过期时间、邀请 token 哈希和人物资料。密码使用 PBKDF2-SHA256 派生，数据库只保存 salt 与 hash；会话和邀请码只保存 hash，明文 token 只在创建响应中返回。
 
-远程部署前必须把 `wrangler.local.toml` 中的本地数据库配置替换为真实 Cloudflare D1 绑定，并单独执行远程迁移。仓库不包含真实账号、密钥或数据库副本。
+受保护接口读取 `Authorization: Bearer <token>`；前端将明文 token 保存在本地会话存储中，D1 只保存 SHA-256 hash。当前实现没有 Cookie 或 CSRF 机制，因此正式站必须使用 HTTPS，并用精确 `ALLOWED_ORIGIN` 限制跨域来源。
+
+远程部署使用独立的生产配置和真实 Cloudflare D1/R2 绑定，步骤见 [deployment.md](./deployment.md)。仓库不包含真实账号、密码、密钥、token 或数据库副本。

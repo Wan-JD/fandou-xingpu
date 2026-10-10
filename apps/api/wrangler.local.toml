@@ -11,3 +11,7 @@ database_name = "fandou-xingpu-local"
 # Local-only Wrangler sentinel; this file must not be used for remote deploys.
 database_id = "local"
 migrations_dir = "../../database/migrations"
+
+[[r2_buckets]]
+binding = "FILES"
+bucket_name = "fandou-xingpu-local"

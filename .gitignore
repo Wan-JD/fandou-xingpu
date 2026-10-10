@@ -8,6 +8,7 @@ dist/
 .env.*
 !.env.example
 *.local
+apps/api/wrangler.production.toml
 coverage/
 .playwright-cli/
 .DS_Store

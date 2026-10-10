@@ -90,7 +90,7 @@ accountApi.get("/me/profile", async (c) => {
     : getDemoSession(c.req.header("Authorization"));
   if (!session) return errorResponse("请先登录", "UNAUTHENTICATED", 401);
   if (store) {
-    const profile = await store.personDetail(session.user.personId);
+    const profile = await store.personDetail(session.user.personId, { userId: session.user.id, personId: session.user.personId, role: session.user.role });
     if (!profile) return errorResponse("账号尚未绑定人物档案", "PROFILE_NOT_FOUND", 404);
     return c.json({ data: profile, meta: { demo: false } });
   }
@@ -112,7 +112,8 @@ accountApi.patch("/me/profile", async (c) => {
     if (!existing) return errorResponse("账号尚未绑定人物档案", "PROFILE_NOT_FOUND", 404);
     const updated = await store.updateProfile(session.user.personId, parsed.data);
     if (!updated) return errorResponse("资料已更新，请刷新后重试", "VERSION_CONFLICT", 409);
-    return c.json({ data: updated, meta: { demo: false } });
+    const profile = await store.personDetail(session.user.personId, { userId: session.user.id, personId: session.user.personId, role: session.user.role });
+    return c.json({ data: profile ?? updated, meta: { demo: false } });
   }
   const person = findPerson(session.user.personId);
   if (!person) return errorResponse("账号尚未绑定人物档案", "PROFILE_NOT_FOUND", 404);

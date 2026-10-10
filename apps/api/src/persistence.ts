@@ -36,11 +36,13 @@ type PersonRow = {
   cohort_year: number | null;
   cohort_sort_order: number | null;
   cohort_description: string | null;
+  avatar_attachment_id: string | null;
 };
 
 type StoredPerson = {
   person: Person;
   cohort: Cohort | null;
+  cohortSortOrder: number | null;
   version: number;
   createdAt: string;
   updatedAt: string;
@@ -81,12 +83,15 @@ export type InviteInspection =
   | { state: "missing"; record: null }
   | { state: "expired" | "accepted" | "pending"; record: PersistentInvite };
 
+export type ContentViewer = { userId?: string; personId?: string; role?: "member" | "admin" };
+
 const PERSON_SELECT = `
   SELECT p.id, p.name, p.nickname, p.mentor_id, p.relation_scope, p.bio,
     p.is_featured, p.status, p.destination, p.version, p.role, p.joined_at,
     p.tags_json, p.created_at, p.updated_at,
     c.id AS cohort_id, c.label AS cohort_label, c.year AS cohort_year,
-    c.sort_order AS cohort_sort_order, c.description AS cohort_description
+    c.sort_order AS cohort_sort_order, c.description AS cohort_description,
+    (SELECT a.id FROM attachments a WHERE a.person_id = p.id AND a.category = 'avatar' AND a.status = 'ready' LIMIT 1) AS avatar_attachment_id
   FROM people p
   LEFT JOIN cohorts c ON c.id = p.cohort_id`;
 
@@ -121,7 +126,7 @@ function mapPerson(row: PersonRow): StoredPerson {
       id: row.id,
       name: row.name,
       nickname: row.nickname,
-      avatarUrl: null,
+      avatarUrl: row.avatar_attachment_id ? `/api/attachments/${row.avatar_attachment_id}` : null,
       role: row.role,
       generation: cohort?.name ?? "未分届次",
       joinedAt: row.joined_at ?? row.created_at.slice(0, 10),
@@ -134,6 +139,7 @@ function mapPerson(row: PersonRow): StoredPerson {
       bio: row.bio,
     },
     cohort,
+    cohortSortOrder: row.cohort_sort_order,
     version: row.version,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -147,7 +153,7 @@ function toSummary(record: StoredPerson) {
     name: person.name,
     nickname: person.nickname,
     avatarUrl: person.avatarUrl,
-    cohort: cohort ? { id: cohort.id, label: cohort.name, year: cohort.year || null, sortOrder: cohort.year ? cohort.year - 2019 : 99 } : null,
+    cohort: cohort ? { id: cohort.id, label: cohort.name, year: cohort.year || null, sortOrder: record.cohortSortOrder ?? (cohort.year ? cohort.year - 2019 : 99) } : null,
     relationScope: person.relationScope,
     isFeatured: person.isFeatured,
     status: person.status,
@@ -170,17 +176,6 @@ export class D1Persistence {
 
   constructor(db: D1Database) {
     this.db = db;
-  }
-
-  private async ensureDemoAccount() {
-    const existing = await this.db.prepare("SELECT id FROM users WHERE lower(email) = ?").bind("demo@fandou.local").first<{ id: string }>();
-    if (existing) return;
-    const credentials = await createPasswordFields("demo1234");
-    await this.db.prepare(`
-      INSERT OR IGNORE INTO users (
-        id, person_id, role, status, email, display_name, password_salt, password_hash
-      ) VALUES ('demo-account-001', 'demo-person-002', 'member', 'active', ?, '周予安', ?, ?)
-    `).bind("demo@fandou.local", credentials.passwordSalt, credentials.passwordHash).run();
   }
 
   private async people() {
@@ -213,7 +208,7 @@ export class D1Persistence {
     };
   }
 
-  async personDetail(id: string) {
+  async personDetail(id: string, viewer?: ContentViewer) {
     const records = await this.people();
     const byId = new Map(records.map((record) => [record.person.id, record]));
     const record = byId.get(id);
@@ -231,12 +226,84 @@ export class D1Persistence {
       bio: record.person.bio,
       featuredNote: record.person.isFeatured ? "谱系中的重要节点" : null,
       resume: null,
-      achievements: [],
-      attachments: [],
+      achievements: viewer && (viewer.role === "admin" || viewer.personId === id) ? await this.achievements(id) : [],
+      attachments: await this.attachments(id, viewer),
       version: record.version,
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
     };
+  }
+
+  async achievements(personId: string) {
+    const result = await this.db.prepare(`SELECT id, person_id AS personId, kind, title, content, occurred_on AS occurredOn,
+      date_precision AS datePrecision, version, created_at AS createdAt, updated_at AS updatedAt
+      FROM achievements WHERE person_id = ? ORDER BY occurred_on DESC, created_at DESC`).bind(personId).all();
+    return result.results;
+  }
+
+  async createAchievement(personId: string, input: { kind: string; title: string; content: string; occurredOn?: string | null; datePrecision?: string | null }) {
+    const id = `achievement-${crypto.randomUUID()}`;
+    await this.db.prepare(`INSERT INTO achievements (id, person_id, kind, title, content, occurred_on, date_precision)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`).bind(id, personId, input.kind, input.title, input.content, input.occurredOn ?? null, input.datePrecision ?? null).run();
+    return (await this.achievements(personId)).find((item) => item.id === id) ?? null;
+  }
+
+  async updateAchievement(personId: string, id: string, version: number, input: { kind?: string; title?: string; content?: string; occurredOn?: string | null; datePrecision?: string | null }) {
+    const fields: string[] = [];
+    const values: unknown[] = [];
+    for (const [field, column] of [["kind", "kind"], ["title", "title"], ["content", "content"], ["occurredOn", "occurred_on"], ["datePrecision", "date_precision"]] as const) {
+      if (field in input) { fields.push(`${column} = ?`); values.push(input[field]); }
+    }
+    if (!fields.length) return null;
+    fields.push("version = version + 1", "updated_at = datetime('now')");
+    const result = await this.db.prepare(`UPDATE achievements SET ${fields.join(", ")} WHERE id = ? AND person_id = ? AND version = ?`)
+      .bind(...values, id, personId, version).run();
+    if ((result.meta.changes ?? 0) === 0) return null;
+    return (await this.achievements(personId)).find((item) => item.id === id) ?? null;
+  }
+
+  async deleteAchievement(personId: string, id: string, version: number) {
+    const result = await this.db.prepare("DELETE FROM achievements WHERE id = ? AND person_id = ? AND version = ?")
+      .bind(id, personId, version).run();
+    return (result.meta.changes ?? 0) > 0;
+  }
+
+  async attachments(personId: string, viewer?: ContentViewer) {
+    const canViewMembers = Boolean(viewer?.userId);
+    const canViewPrivate = viewer?.role === "admin" || viewer?.personId === personId;
+    const result = await this.db.prepare(`SELECT id, person_id AS personId, achievement_id AS achievementId, original_name AS originalName,
+      mime_type AS mimeType, size, category, visibility, status, NULL AS url, created_at AS createdAt, updated_at AS updatedAt
+      FROM attachments WHERE person_id = ? AND status = 'ready' AND (category = 'avatar' OR (visibility = 'members' AND ? = 1) OR (visibility = 'private' AND ? = 1)) ORDER BY created_at DESC`).bind(personId, canViewMembers ? 1 : 0, canViewPrivate ? 1 : 0).all();
+    return result.results;
+  }
+
+  async attachment(id: string) {
+    return this.db.prepare("SELECT id, person_id AS personId, object_key AS objectKey, original_name AS originalName, mime_type AS mimeType, size, category, visibility, status FROM attachments WHERE id = ?")
+      .bind(id).first<{ id: string; personId: string; objectKey: string; originalName: string; mimeType: string; size: number; category: string; visibility: string; status: string }>();
+  }
+
+  async addAttachment(personId: string, file: File, category: string, visibility: string, files: R2Bucket) {
+    const id = `attachment-${crypto.randomUUID()}`;
+    const objectKey = `people/${personId}/${id}`;
+    const body = await file.arrayBuffer();
+    await files.put(objectKey, body, { httpMetadata: { contentType: file.type } });
+    try {
+      await this.db.prepare(`INSERT INTO attachments (id, person_id, object_key, original_name, mime_type, size, category, visibility, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ready')`).bind(id, personId, objectKey, file.name, file.type, body.byteLength, category, visibility).run();
+    } catch (error) {
+      await files.delete(objectKey);
+      throw error;
+    }
+    return this.attachment(id);
+  }
+
+  async removeAttachment(personId: string, id: string, files: R2Bucket) {
+    const item = await this.attachment(id);
+    if (!item || item.personId !== personId) return false;
+    await this.db.prepare("UPDATE attachments SET status = 'deleted', updated_at = datetime('now') WHERE id = ? AND person_id = ? AND status = 'ready'")
+      .bind(id, personId).run();
+    await files.delete(item.objectKey);
+    return true;
   }
 
   async searchPeople(query: string, limit: number) {
@@ -256,14 +323,15 @@ export class D1Persistence {
 
   async cohorts() {
     const rows = await this.db.prepare(`
-      SELECT c.id, c.label AS name, c.year, c.description, COUNT(p.id) AS member_count
+      SELECT c.id, c.label AS name, c.year, c.sort_order, c.description, COUNT(p.id) AS member_count
       FROM cohorts c LEFT JOIN people p ON p.cohort_id = c.id
       GROUP BY c.id ORDER BY COALESCE(c.year, 9999), c.sort_order, c.id
-    `).all<{ id: string; name: string; year: number | null; description: string | null; member_count: number }>();
+    `).all<{ id: string; name: string; year: number | null; sort_order: number; description: string | null; member_count: number }>();
     return rows.results.map((row) => ({
       id: row.id,
       name: row.name,
       year: row.year ?? 0,
+      sortOrder: row.sort_order,
       memberCount: Number(row.member_count),
       description: row.description ?? "",
     } satisfies Cohort));
@@ -279,7 +347,7 @@ export class D1Persistence {
       label: cohort.name,
       name: cohort.name,
       year: cohort.year,
-      sortOrder: cohort.year ? cohort.year - 2019 : 99,
+      sortOrder: cohort.sortOrder ?? (cohort.year ? cohort.year - 2019 : 99),
       description: cohort.description,
       lineagePeople: records.filter(({ person }) => person.relationScope === "lineage").map(toSummary),
       guestPeople: records.filter(({ person }) => person.relationScope === "cohort_guest").map(toSummary),
@@ -297,14 +365,29 @@ export class D1Persistence {
   }
 
   async login(email: string, password: string, now = Date.now()): Promise<DemoLoginResult> {
-    await this.ensureDemoAccount();
+    const normalizedEmail = normalizeEmail(email);
+    const attempt = await this.db.prepare("SELECT failures, window_started_at AS windowStartedAt, blocked_until AS blockedUntil FROM login_attempts WHERE email = ?")
+      .bind(normalizedEmail).first<{ failures: number; windowStartedAt: string; blockedUntil: string | null }>();
+    const windowMs = 15 * 60 * 1000;
+    const blockMs = 15 * 60 * 1000;
+    let failures = attempt && now - Date.parse(attempt.windowStartedAt) < windowMs ? attempt.failures : 0;
+    if (attempt?.blockedUntil && Date.parse(attempt.blockedUntil) > now) {
+      return { status: "rate_limited", retryAfterSeconds: Math.ceil((Date.parse(attempt.blockedUntil) - now) / 1000) };
+    }
     const account = await this.db.prepare(`
       SELECT id, email, display_name, person_id, role, password_salt, password_hash
       FROM users WHERE lower(email) = ? AND status = 'active'
-    `).bind(normalizeEmail(email)).first<AccountRow>();
+    `).bind(normalizedEmail).first<AccountRow>();
     if (!account || !await verifyPassword(password, account.password_salt, account.password_hash)) {
+      failures += 1;
+      const blockedUntil = failures >= 5 ? new Date(now + blockMs).toISOString() : null;
+      await this.db.prepare(`INSERT INTO login_attempts (email, failures, window_started_at, blocked_until) VALUES (?, ?, ?, ?)
+        ON CONFLICT(email) DO UPDATE SET failures = excluded.failures, window_started_at = excluded.window_started_at, blocked_until = excluded.blocked_until`)
+        .bind(normalizedEmail, failures, new Date(now).toISOString(), blockedUntil).run();
+      if (blockedUntil) return { status: "rate_limited", retryAfterSeconds: Math.ceil(blockMs / 1000) };
       return { status: "invalid" };
     }
+    await this.db.prepare("DELETE FROM login_attempts WHERE email = ?").bind(normalizedEmail).run();
     return { status: "success", session: await this.issueSession(account, now) };
   }
 
@@ -392,7 +475,6 @@ export class D1Persistence {
   }
 
   async session(authorization: string | undefined, now = Date.now()) {
-    await this.ensureDemoAccount();
     const token = bearerToken(authorization);
     if (!token) return null;
     const tokenHash = await hashToken(token);

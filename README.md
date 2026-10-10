@@ -1,34 +1,37 @@
 # 翻斗星谱
 
-翻斗花园师徒传承档案 Web 项目。
+翻斗花园师徒传承档案 Web 项目。前端使用 Vue 3、TypeScript 和 Vite，API 使用 Hono 与 Cloudflare Workers，持久化使用 D1，附件使用 R2。
 
-## 初版状态
+当前实现包含星谱与届次浏览、人物详情与搜索、邀请制一次性注册、登录会话、本人资料维护，以及管理员成员、届次、账号、邀请和审计工作台。普通注册入口被关闭；邀请始终绑定发起邀请的当前登录成员。
 
-当前初版包含：
+## 快速开始
 
-- Vue 3 + TypeScript + Vite 树谱首页
-- 点击人物节点打开简介抽屉，跳转 `/person/:id` 详情页
-- 姓名、方向和届次搜索；届次折叠；桌面与移动响应式布局
-- Hono + TypeScript Workers API：`/api/health`、`/api/tree`、`/api/people/:id`、`/api/cohorts`
-- D1/SQLite 初始迁移与前后端共享契约
-- 明确标注的虚构演示资料；未接入真实成员档案
-
-## 本地运行
-
-```bash
+```powershell
 pnpm install
-pnpm dev:web
-pnpm dev:api
+$env:ADMIN_EMAIL="admin@fandou.local"
+$env:ADMIN_PASSWORD="请设置至少8位的本地密码"
+$env:ADMIN_NAME="本地管理员"
+pnpm db:bootstrap:local
+pnpm dev
 ```
 
-前端默认地址为 `http://localhost:5173`，API 默认由 Wrangler 提供。生产部署配置尚未接入 Cloudflare 账号资源。
+打开 `http://localhost:5173`。`pnpm dev` 默认使用本地 D1，自动应用待执行迁移，并由 Vite 将 `/api` 代理到 `http://127.0.0.1:8787`。仓库没有预置管理员密码。
+
+```powershell
+pnpm test:contracts
+pnpm build
+```
+
+本地 D1 集成测试、备份恢复、生产样例清理、D1/R2 配置与 Cloudflare Pages 路由见 [部署文档](docs/deployment.md)。
 
 ## 目录
 
-- `apps/web`：Vue 前端
+- `apps/web`：Vue 前端与管理工作台
 - `apps/api`：Hono Workers API
-- `packages/shared`：共享类型和 Zod 校验
-- `database/migrations`：D1/SQLite 迁移
-- `docs`：架构与视觉说明
+- `packages/shared`：共享类型和校验
+- `database/migrations`：D1 迁移
+- `database/production`：仅供新生产实例显式执行的运维 SQL
+- `scripts`：本地启动、集成测试和备份恢复脚本
+- `docs`：架构、认证、品牌与部署说明
 
 真实成员资料、API key、Token、数据库副本和备份文件不得提交到仓库。
