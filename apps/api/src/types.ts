@@ -20,6 +20,11 @@ export interface Person {
   isFeatured: boolean;
   mentorId: string | null;
   bio: string;
+  contactEmail?: string | null;
+  education?: string | null;
+  experience?: string | null;
+  skills?: string[];
+  links?: { label: string; url: string }[];
 }
 
 export interface Cohort {
@@ -49,4 +54,9 @@ export interface TreeNode {
   joinedAt: string;
   tags: string[];
   bio: string;
+  contactEmail?: string | null;
+  education?: string | null;
+  experience?: string | null;
+  skills?: string[];
+  links?: { label: string; url: string }[];
 }

@@ -6,6 +6,7 @@ export const personStatusSchema = z.enum(["active", "archived"]);
 export const destinationSchema = z.enum(["big_tech", "postgraduate_985", "postgraduate_211", "startup", "further_study", "other"]);
 export const datePrecisionSchema = z.enum(["year", "month", "day"]);
 export const achievementKindSchema = z.enum(["achievement", "honor"]);
+export const profileLinkSchema = z.object({ label: z.string().trim().min(1).max(80), url: z.string().trim().url().max(500) }).strict();
 
 export const treeQuerySchema = z.object({
   rootPersonId: idSchema.optional(),
@@ -22,6 +23,11 @@ export const personUpdateSchema = z.object({
   bio: z.string().trim().max(10_000).optional(),
   nickname: z.string().trim().max(100).nullable().optional(),
   destination: destinationSchema.nullable().optional(),
+  contactEmail: z.string().trim().email().max(254).nullable().optional(),
+  education: z.string().trim().max(10_000).nullable().optional(),
+  experience: z.string().trim().max(20_000).nullable().optional(),
+  skills: z.array(z.string().trim().min(1).max(80)).max(30).optional(),
+  links: z.array(profileLinkSchema).max(20).optional(),
   version: z.number().int().min(1),
 }).strict();
 

@@ -6,13 +6,13 @@
 
 ```powershell
 pnpm install
-$env:ADMIN_EMAIL="admin@fandou.local"
+$env:ADMIN_EMAIL="wanjundi0512@163.com"
 $env:ADMIN_PASSWORD="请设置至少8位的本地密码"
-$env:ADMIN_NAME="本地管理员"
+$env:ADMIN_NAME="wan jundi"
 pnpm db:bootstrap:local
 ```
 
-`db:bootstrap:local` 会先应用全部本地 D1 迁移，再用 `session.ts` 的 PBKDF2 实现写入首位管理员。三个环境变量均为必填项；仓库不包含管理员默认密码。该账号记录带 `is_local_demo=1`，只能作为本地资料使用。
+`db:bootstrap:local` 会先应用全部本地 D1 迁移，再用 `session.ts` 的 PBKDF2 实现写入唯一超级管理员。密码只通过环境变量注入；仓库不包含默认密码，D1 只保存 salt 与派生 hash。
 
 之后一条命令启动前后端：
 
@@ -20,12 +20,12 @@ pnpm db:bootstrap:local
 pnpm dev
 ```
 
-它会再次安全地应用待执行迁移，然后启动 D1 Worker `http://127.0.0.1:8787` 和 Vite `http://localhost:5173`。Vite 已把 `/api` 代理至 8787。仅调试无 D1 的内存演示 API 时使用 `pnpm --dir apps/api dev:memory`。
+它会再次安全地应用待执行迁移，然后启动 D1 Worker `http://127.0.0.1:8787` 和 Vite `http://localhost:5173`。Vite 已把 `/api` 代理至 8787。
 
 真实 D1 集成冒烟测试要求 Worker 正在 8787 运行：
 
 ```powershell
-$env:ADMIN_EMAIL="admin@fandou.local"
+$env:ADMIN_EMAIL="wanjundi0512@163.com"
 $env:ADMIN_PASSWORD="你的本地密码"
 pnpm test:integration:local
 ```
@@ -36,7 +36,7 @@ pnpm test:integration:local
 pnpm test:integration:isolated
 ```
 
-该命令在 `backups/` 下建立临时 Wrangler 状态，应用包括 `0004`、`0005` 在内的全部迁移，生成随机本地管理员，启动独立端口完成真实 HTTP smoke，最后关闭 Worker 并删除临时状态。
+该命令在 `backups/` 下建立临时 Wrangler 状态，应用全部迁移，使用唯一超级管理员环境变量，启动独立端口完成真实 HTTP smoke，最后关闭 Worker 并删除临时状态。
 
 ## 本地备份与隔离恢复
 
@@ -57,21 +57,20 @@ pnpm db:restore:local
 
 ```powershell
 pnpm --dir apps/api exec wrangler d1 migrations apply DB --remote -c wrangler.production.toml
-pnpm --dir apps/api exec wrangler d1 execute DB --remote -c wrangler.production.toml --file ../../database/production/cleanup-demo-fixtures.sql
 ```
 
-第二条命令只可在刚完成迁移、尚未录入真实资料的新库执行。它移除 `0003` 为本地展示保留的虚构人物和届次；已有真实数据的数据库不得运行。
+全部迁移包含 `0007`，会精确删除历史 fixture id 并移除旧的账号标记列，不需要再执行 fixture 清理 SQL。
 
-离线生成正式首位管理员 SQL：
+离线生成正式唯一超级管理员 SQL：
 
 ```powershell
-$env:ADMIN_EMAIL="admin@example.com"
-$env:ADMIN_PASSWORD="正式环境强密码"
-$env:ADMIN_NAME="管理员姓名"
+$env:ADMIN_EMAIL="wanjundi0512@163.com"
+$env:ADMIN_PASSWORD="从密码管理器注入，不要写入文件"
+$env:ADMIN_NAME="wan jundi"
 pnpm db:admin-sql:production
 ```
 
-生成文件为已忽略的 `secrets/bootstrap-production-admin.sql`，使用与 `session.ts` 相同的 PBKDF2 参数，且 `is_local_demo=0`。SQL 仅在目标库不存在任何管理员且邮箱未占用时插入，不会更新或重置已有管理员。检查目标账号与配置后显式执行：
+脚本严格拒绝其他邮箱，并把 `ADMIN_PASSWORD` 作为进程环境变量读取；密码不会写入配置或前端。生成文件为已忽略的 `secrets/bootstrap-production-admin.sql`，使用与 `session.ts` 相同的 PBKDF2-SHA256 参数，D1 只保存 salt 与派生 hash。SQL 可重复执行：会将其他已有管理员降级为停用成员，创建或更新 `wanjundi0512@163.com` 为唯一启用的管理员，并停用其旧会话。检查目标账号与配置后显式执行：
 
 ```powershell
 pnpm --dir apps/api exec wrangler d1 execute DB --remote -c wrangler.production.toml --file ../../secrets/bootstrap-production-admin.sql

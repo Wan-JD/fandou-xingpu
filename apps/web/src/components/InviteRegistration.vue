@@ -59,7 +59,7 @@ async function acceptInvite() {
     if (!response.ok || !payload.data) throw new Error(errorText(payload.error?.code));
     mentor.value = payload.data.mentor;
     acceptedName.value = payload.data.member.name;
-    localStorage.setItem("fandou-demo-session", payload.data.session.token);
+    localStorage.setItem("fandou-session", payload.data.session.token);
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : errorText();
   } finally {

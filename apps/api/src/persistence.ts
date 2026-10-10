@@ -8,9 +8,9 @@ import {
   hashToken,
   normalizeEmail,
   verifyPassword,
-  type DemoLoginResult,
-  type DemoSession,
-  type DemoSessionUser,
+  type LoginResult,
+  type Session,
+  type SessionUser,
 } from "./session.ts";
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -37,6 +37,11 @@ type PersonRow = {
   cohort_sort_order: number | null;
   cohort_description: string | null;
   avatar_attachment_id: string | null;
+  contact_email: string | null;
+  education: string | null;
+  experience: string | null;
+  skills_json: string;
+  links_json: string;
 };
 
 type StoredPerson = {
@@ -89,9 +94,10 @@ const PERSON_SELECT = `
   SELECT p.id, p.name, p.nickname, p.mentor_id, p.relation_scope, p.bio,
     p.is_featured, p.status, p.destination, p.version, p.role, p.joined_at,
     p.tags_json, p.created_at, p.updated_at,
+    p.contact_email, p.education, p.experience, p.skills_json, p.links_json,
     c.id AS cohort_id, c.label AS cohort_label, c.year AS cohort_year,
     c.sort_order AS cohort_sort_order, c.description AS cohort_description,
-    (SELECT a.id FROM attachments a WHERE a.person_id = p.id AND a.category = 'avatar' AND a.status = 'ready' LIMIT 1) AS avatar_attachment_id
+    (SELECT a.id FROM attachments a WHERE a.person_id = p.id AND a.category = 'avatar' AND a.status = 'ready' ORDER BY a.created_at DESC LIMIT 1) AS avatar_attachment_id
   FROM people p
   LEFT JOIN cohorts c ON c.id = p.cohort_id`;
 
@@ -108,6 +114,24 @@ function parseTags(value: string) {
   try {
     const parsed: unknown = JSON.parse(value);
     return Array.isArray(parsed) ? parsed.filter((tag): tag is string => typeof tag === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseStringList(value: string | null | undefined) {
+  try {
+    const parsed: unknown = JSON.parse(value ?? "[]");
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseLinks(value: string | null | undefined) {
+  try {
+    const parsed: unknown = JSON.parse(value ?? "[]");
+    return Array.isArray(parsed) ? parsed.filter((item): item is { label: string; url: string } => Boolean(item && typeof item === "object" && typeof (item as { label?: unknown }).label === "string" && typeof (item as { url?: unknown }).url === "string")) : [];
   } catch {
     return [];
   }
@@ -137,6 +161,11 @@ function mapPerson(row: PersonRow): StoredPerson {
       isFeatured: Boolean(row.is_featured),
       mentorId: row.mentor_id,
       bio: row.bio,
+      contactEmail: row.contact_email,
+      education: row.education,
+      experience: row.experience,
+      skills: parseStringList(row.skills_json),
+      links: parseLinks(row.links_json),
     },
     cohort,
     cohortSortOrder: row.cohort_sort_order,
@@ -161,7 +190,7 @@ function toSummary(record: StoredPerson) {
   };
 }
 
-function publicUser(row: AccountRow): DemoSessionUser {
+function publicUser(row: AccountRow): SessionUser {
   return {
     id: row.id,
     email: row.email,
@@ -196,6 +225,10 @@ export class D1Persistence {
       joinedAt: record.person.joinedAt,
       tags: record.person.tags,
       bio: record.person.bio,
+      education: record.person.education,
+      experience: record.person.experience,
+      skills: record.person.skills,
+      links: record.person.links,
     }));
     return {
       rootPersonId: lineage.rootIds[0] ?? null,
@@ -204,7 +237,6 @@ export class D1Persistence {
         ? [{ id: `edge-${person.id}`, mentorId: person.mentorId, studentId: person.id }]
         : []),
       generatedAt: new Date().toISOString(),
-      demo: false as const,
     };
   }
 
@@ -224,10 +256,15 @@ export class D1Persistence {
       mentor: mentor ? toSummary(mentor) : null,
       students: students.map(toSummary),
       bio: record.person.bio,
+      education: record.person.education,
+      experience: record.person.experience,
+      skills: record.person.skills,
+      links: record.person.links,
       featuredNote: record.person.isFeatured ? "谱系中的重要节点" : null,
-      resume: null,
+      resume: (await this.attachments(id, viewer)).find((item) => item.category === "resume") ?? null,
       achievements: viewer && (viewer.role === "admin" || viewer.personId === id) ? await this.achievements(id) : [],
       attachments: await this.attachments(id, viewer),
+      contactEmail: viewer && (viewer.role === "admin" || viewer.personId === id) ? record.person.contactEmail : null,
       version: record.version,
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
@@ -361,10 +398,10 @@ export class D1Persistence {
     const expiresAt = new Date(now + SESSION_TTL_MS).toISOString();
     await this.db.prepare("INSERT INTO auth_sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)")
       .bind(tokenHash, account.id, expiresAt).run();
-    return { token, expiresAt, user: publicUser(account) } satisfies DemoSession;
+    return { token, expiresAt, user: publicUser(account) } satisfies Session;
   }
 
-  async login(email: string, password: string, now = Date.now()): Promise<DemoLoginResult> {
+  async login(email: string, password: string, now = Date.now()): Promise<LoginResult> {
     const normalizedEmail = normalizeEmail(email);
     const attempt = await this.db.prepare("SELECT failures, window_started_at AS windowStartedAt, blocked_until AS blockedUntil FROM login_attempts WHERE email = ?")
       .bind(normalizedEmail).first<{ failures: number; windowStartedAt: string; blockedUntil: string | null }>();
@@ -467,7 +504,7 @@ export class D1Persistence {
       password_salt: credentials.passwordSalt,
       password_hash: credentials.passwordHash,
     };
-    return { token: sessionToken, expiresAt, user: publicUser(account) } satisfies DemoSession;
+    return { token: sessionToken, expiresAt, user: publicUser(account) } satisfies Session;
   }
 
   async registerAccount(displayName: string, email: string, password: string, personId: string, now = Date.now()) {
@@ -489,7 +526,7 @@ export class D1Persistence {
       await this.db.prepare("DELETE FROM auth_sessions WHERE token_hash = ?").bind(tokenHash).run();
       return null;
     }
-    return { token, expiresAt: row.expires_at, user: publicUser(row) } satisfies DemoSession;
+    return { token, expiresAt: row.expires_at, user: publicUser(row) } satisfies Session;
   }
 
   async deleteSession(authorization: string | undefined) {
@@ -499,12 +536,17 @@ export class D1Persistence {
     return (result.meta.changes ?? 0) > 0;
   }
 
-  async updateProfile(personId: string, input: { version: number; nickname?: string | null; bio?: string; destination?: Person["destination"] }) {
+  async updateProfile(personId: string, input: { version: number; nickname?: string | null; bio?: string; destination?: Person["destination"]; contactEmail?: string | null; education?: string | null; experience?: string | null; skills?: string[]; links?: { label: string; url: string }[] }) {
     const assignments: string[] = [];
     const values: unknown[] = [];
     if ("nickname" in input) { assignments.push("nickname = ?"); values.push(input.nickname ?? null); }
     if (input.bio !== undefined) { assignments.push("bio = ?"); values.push(input.bio); }
     if ("destination" in input) { assignments.push("destination = ?"); values.push(input.destination ?? null); }
+    if ("contactEmail" in input) { assignments.push("contact_email = ?"); values.push(input.contactEmail ?? null); }
+    if ("education" in input) { assignments.push("education = ?"); values.push(input.education ?? null); }
+    if ("experience" in input) { assignments.push("experience = ?"); values.push(input.experience ?? null); }
+    if ("skills" in input) { assignments.push("skills_json = ?"); values.push(JSON.stringify(input.skills ?? [])); }
+    if ("links" in input) { assignments.push("links_json = ?"); values.push(JSON.stringify(input.links ?? [])); }
     assignments.push("version = version + 1", "updated_at = datetime('now')");
     const result = await this.db.prepare(`UPDATE people SET ${assignments.join(", ")} WHERE id = ? AND version = ?`)
       .bind(...values, personId, input.version).run();

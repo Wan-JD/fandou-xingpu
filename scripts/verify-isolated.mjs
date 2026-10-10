@@ -8,7 +8,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const apiRoot = path.join(root, "apps", "api");
 const state = path.join(root, "backups", `verify-${Date.now()}`);
 const port = Number(process.env.SMOKE_PORT ?? 8791);
-const email = `isolated-admin-${Date.now()}@fandou.local`;
+const email = "wanjundi0512@163.com";
 const password = `isolated-${crypto.randomUUID()}`;
 const pnpmCli = process.env.npm_execpath;
 if (!pnpmCli) throw new Error("Run this script through pnpm test:integration:isolated.");
@@ -18,7 +18,7 @@ const bootstrap = spawnSync(process.execPath, [pnpmCli, "--dir", "apps/api", "db
   cwd: root,
   stdio: "inherit",
   shell: false,
-  env: { ...process.env, ADMIN_EMAIL: email, ADMIN_PASSWORD: password, ADMIN_NAME: "隔离验收管理员", D1_PERSIST_TO: state },
+  env: { ...process.env, ADMIN_EMAIL: email, ADMIN_PASSWORD: password, ADMIN_NAME: "wan jundi", D1_PERSIST_TO: state },
 });
 if (bootstrap.error) throw bootstrap.error;
 if (bootstrap.status !== 0) process.exit(bootstrap.status ?? 1);

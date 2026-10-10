@@ -1,8 +1,5 @@
 import { Hono } from "hono";
-import { initializeProfileMetadata } from "./account-api.ts";
-import { addRegisteredPerson, findPerson, toSummary } from "./data.ts";
 import { persistence, type PersistentInvite } from "./persistence.ts";
-import { getDemoSession, registerDemoAccount } from "./session.ts";
 import type { Env } from "./types";
 
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -17,6 +14,7 @@ export type InviteRecord = {
   accepting: boolean;
 };
 
+// These pure helpers support contract tests only. HTTP routes below always use D1.
 const invites = new Map<string, InviteRecord>();
 
 export function createInviteRecord(mentorId: string, options: { now?: number; ttlMs?: number; token?: string } = {}) {
@@ -57,20 +55,8 @@ export function resetInviteStore() {
   invites.clear();
 }
 
-const apiError = (status: 400 | 401 | 404 | 409 | 410, code: string, message: string) =>
+const apiError = (status: 400 | 401 | 404 | 409 | 410 | 503, code: string, message: string) =>
   new Response(JSON.stringify({ error: { code, message } }), { status, headers: { "Content-Type": "application/json" } });
-
-const publicInvite = (record: InviteRecord) => {
-  const mentor = findPerson(record.mentorId);
-  return {
-    token: record.token,
-    status: record.acceptedAt ? "accepted" : "pending",
-    createdAt: record.createdAt,
-    expiresAt: record.expiresAt,
-    acceptedAt: record.acceptedAt,
-    mentor: mentor ? toSummary(mentor) : null,
-  };
-};
 
 const publicPersistentInvite = (record: PersistentInvite, mentor: Record<string, unknown> | null) => ({
   token: record.token,
@@ -94,39 +80,26 @@ const publicPersistentInvite = (record: PersistentInvite, mentor: Record<string,
 export const inviteApi = new Hono<{ Bindings: Env }>();
 
 inviteApi.post("/", async (c) => {
-  const store = c.env?.DB ? persistence(c.env.DB) : null;
-  const session = store
-    ? await store.session(c.req.header("Authorization"))
-    : getDemoSession(c.req.header("Authorization"));
+  if (!c.env?.DB) return apiError(503, "DATABASE_UNAVAILABLE", "Authentication database is not configured");
+  const store = persistence(c.env.DB);
+  const session = await store.session(c.req.header("Authorization"));
   if (!session) return apiError(401, "UNAUTHENTICATED", "Sign in before creating an invitation");
   const mentorId = session.user.personId;
-  if (store) {
-    const mentor = await store.personDetail(mentorId);
-    if (!mentor) return apiError(404, "MENTOR_NOT_FOUND", "Mentor not found");
-    if (mentor.relationScope !== "lineage") return apiError(409, "MENTOR_NOT_LINEAGE", "Only lineage members can invite students");
-    const record = await store.createInvite(mentorId, session.user.id);
-    return c.json({ data: publicPersistentInvite(record, mentor), meta: { demo: false } }, 201);
-  }
-  const mentor = findPerson(mentorId);
+  const mentor = await store.personDetail(mentorId);
   if (!mentor) return apiError(404, "MENTOR_NOT_FOUND", "Mentor not found");
   if (mentor.relationScope !== "lineage") return apiError(409, "MENTOR_NOT_LINEAGE", "Only lineage members can invite students");
-  const record = createInviteRecord(mentorId);
-  return c.json({ data: publicInvite(record), meta: { demo: true } }, 201);
+  const record = await store.createInvite(mentorId, session.user.id);
+  return c.json({ data: publicPersistentInvite(record, mentor) }, 201);
 });
 
 inviteApi.get("/:token", async (c) => {
-  if (c.env?.DB) {
-    const store = persistence(c.env.DB);
-    const result = await store.inspectInvite(c.req.param("token"));
-    if (result.state === "missing") return apiError(404, "INVITE_NOT_FOUND", "Invitation not found");
-    if (result.state === "expired") return apiError(410, "INVITE_EXPIRED", "Invitation has expired");
-    const mentor = await store.personDetail(result.record.mentorId);
-    return c.json({ data: publicPersistentInvite(result.record, mentor), meta: { demo: false } });
-  }
-  const result = inspectInvite(c.req.param("token"));
+  if (!c.env?.DB) return apiError(503, "DATABASE_UNAVAILABLE", "Authentication database is not configured");
+  const store = persistence(c.env.DB);
+  const result = await store.inspectInvite(c.req.param("token"));
   if (result.state === "missing") return apiError(404, "INVITE_NOT_FOUND", "Invitation not found");
   if (result.state === "expired") return apiError(410, "INVITE_EXPIRED", "Invitation has expired");
-  return c.json({ data: publicInvite(result.record), meta: { demo: true } });
+  const mentor = await store.personDetail(result.record.mentorId);
+  return c.json({ data: publicPersistentInvite(result.record, mentor) });
 });
 
 inviteApi.post("/:token/accept", async (c) => {
@@ -138,50 +111,21 @@ inviteApi.post("/:token/accept", async (c) => {
   if (!name || name.length > 100 || (nickname?.length ?? 0) > 100 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || password.length < 6 || password.length > 100) {
     return apiError(400, "INVALID_REGISTRATION", "A valid name is required");
   }
-  if (c.env?.DB) {
-    const store = persistence(c.env.DB);
-    const result = await store.acceptInvite(c.req.param("token"), { name, nickname, email, password });
-    if (result.state === "missing") return apiError(404, "INVITE_NOT_FOUND", "Invitation not found");
-    if (result.state === "expired") return apiError(410, "INVITE_EXPIRED", "Invitation has expired");
-    if (result.state === "accepted") return apiError(409, "INVITE_ALREADY_ACCEPTED", "Invitation has already been accepted");
-    if (result.state === "email-conflict") return apiError(409, "EMAIL_ALREADY_REGISTERED", "Email is already registered");
-    if (result.state !== "accepted-now" || !result.record || !result.session) {
-      return apiError(409, "INVITE_ALREADY_ACCEPTED", "Invitation has already been accepted");
-    }
-    const mentor = await store.personDetail(result.record.mentorId);
-    return c.json({ data: {
-      status: "accepted",
-      acceptedAt: result.record.acceptedAt,
-      member: result.record.acceptedBy,
-      mentor,
-      relationship: { mentorId: result.record.mentorId, studentId: result.record.acceptedBy!.id },
-      session: result.session,
-    }, meta: { demo: false } }, 201);
-  }
-  const beforeRegistration = inspectInvite(c.req.param("token"));
-  if (beforeRegistration.state === "missing") return apiError(404, "INVITE_NOT_FOUND", "Invitation not found");
-  if (beforeRegistration.state === "expired") return apiError(410, "INVITE_EXPIRED", "Invitation has expired");
-  if (beforeRegistration.state === "accepted") return apiError(409, "INVITE_ALREADY_ACCEPTED", "Invitation has already been accepted");
-  if (beforeRegistration.record.accepting) return apiError(409, "INVITE_ACCEPTANCE_IN_PROGRESS", "Invitation is already being accepted");
-  beforeRegistration.record.accepting = true;
-  const memberId = `invited-${beforeRegistration.record.token.replace(/[^a-zA-Z0-9]/g, "").slice(0, 16)}`;
-  try {
-    const session = await registerDemoAccount(name, email, password, memberId);
-    if (!session) return apiError(409, "EMAIL_ALREADY_REGISTERED", "Email is already registered");
-    const result = acceptInviteRecord(c.req.param("token"), { id: session.user.personId, name, nickname });
-    if (result.state !== "accepted-now") return apiError(409, "INVITE_ALREADY_ACCEPTED", "Invitation has already been accepted");
-    const person = addRegisteredPerson({ id: session.user.personId, name, nickname, mentorId: result.record.mentorId });
-    initializeProfileMetadata(person.id, person.joinedAt);
-    const mentor = findPerson(result.record.mentorId);
-    return c.json({ data: {
-      status: "accepted",
-      acceptedAt: result.record.acceptedAt,
-      member: result.record.acceptedBy,
-      mentor: mentor ? toSummary(mentor) : null,
-      relationship: { mentorId: result.record.mentorId, studentId: result.record.acceptedBy!.id },
-      session,
-    }, meta: { demo: true } }, 201);
-  } finally {
-    beforeRegistration.record.accepting = false;
-  }
+  if (!c.env?.DB) return apiError(503, "DATABASE_UNAVAILABLE", "Authentication database is not configured");
+  const store = persistence(c.env.DB);
+  const result = await store.acceptInvite(c.req.param("token"), { name, nickname, email, password });
+  if (result.state === "missing") return apiError(404, "INVITE_NOT_FOUND", "Invitation not found");
+  if (result.state === "expired") return apiError(410, "INVITE_EXPIRED", "Invitation has expired");
+  if (result.state === "accepted") return apiError(409, "INVITE_ALREADY_ACCEPTED", "Invitation has already been accepted");
+  if (result.state === "email-conflict") return apiError(409, "EMAIL_ALREADY_REGISTERED", "Email is already registered");
+  if (result.state !== "accepted-now" || !result.record || !result.session) return apiError(409, "INVITE_ALREADY_ACCEPTED", "Invitation has already been accepted");
+  const mentor = await store.personDetail(result.record.mentorId);
+  return c.json({ data: {
+    status: "accepted",
+    acceptedAt: result.record.acceptedAt,
+    member: result.record.acceptedBy,
+    mentor,
+    relationship: { mentorId: result.record.mentorId, studentId: result.record.acceptedBy!.id },
+    session: result.session,
+  } }, 201);
 });

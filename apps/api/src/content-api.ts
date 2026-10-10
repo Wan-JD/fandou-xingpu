@@ -19,7 +19,7 @@ contentApi.post("/achievements", async (c) => {
   const parsed = achievementInputSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return error(400, "VALIDATION_ERROR", "事迹内容无效");
   const item = await persistence(c.env.DB!).createAchievement(current.user.personId, parsed.data);
-  return c.json({ data: item, meta: { demo: false } }, 201);
+  return c.json({ data: item }, 201);
 });
 
 contentApi.patch("/achievements/:id", async (c) => {
@@ -40,7 +40,7 @@ contentApi.patch("/achievements/:id", async (c) => {
     ...(body?.datePrecision !== undefined ? { datePrecision: body.datePrecision as string | null } : {}),
   });
   if (!item) return error(409, "VERSION_CONFLICT", "事迹已更新，请刷新后重试");
-  return c.json({ data: item, meta: { demo: false } });
+  return c.json({ data: item });
 });
 
 contentApi.delete("/achievements/:id", async (c) => {
@@ -67,7 +67,7 @@ contentApi.post("/attachments", async (c) => {
   if (file.size > max) return error(413, "FILE_TOO_LARGE", "文件超过大小限制");
   if (!(["image/jpeg", "image/png", "image/webp", "application/pdf"].includes(file.type))) return error(415, "UNSUPPORTED_MEDIA_TYPE", "仅支持 JPG、PNG、WebP 或 PDF");
   const item = await persistence(c.env.DB!).addAttachment(current.user.personId, file, category, visibility, c.env.FILES);
-  return c.json({ data: item, meta: { demo: false } }, 201);
+  return c.json({ data: item }, 201);
 });
 
 contentApi.delete("/attachments/:id", async (c) => {

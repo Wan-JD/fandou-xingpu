@@ -8,9 +8,9 @@
 
 ```powershell
 pnpm install
-$env:ADMIN_EMAIL="admin@fandou.local"
-$env:ADMIN_PASSWORD="请设置至少8位的本地密码"
-$env:ADMIN_NAME="本地管理员"
+$env:ADMIN_EMAIL="wanjundi0512@163.com"
+$env:ADMIN_PASSWORD="从密码管理器注入，不要写入文件"
+$env:ADMIN_NAME="wan jundi"
 pnpm db:bootstrap:local
 pnpm dev
 ```
@@ -22,7 +22,7 @@ pnpm test:contracts
 pnpm build
 ```
 
-本地 D1 集成测试、备份恢复、生产样例清理、D1/R2 配置与 Cloudflare Pages 路由见 [部署文档](docs/deployment.md)。
+本地 D1 集成测试、备份恢复、生产数据库初始化、D1/R2 配置与 Cloudflare Pages 路由见 [部署文档](docs/deployment.md)。
 
 ## 目录
 

@@ -5,12 +5,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createPasswordFields, normalizeEmail } from "../src/session.ts";
 
-const email = normalizeEmail(process.env.ADMIN_EMAIL ?? "");
+const requiredEmail = "wanjundi0512@163.com";
+const email = normalizeEmail(process.env.ADMIN_EMAIL ?? requiredEmail);
 const password = process.env.ADMIN_PASSWORD ?? "";
-const name = (process.env.ADMIN_NAME ?? "").trim();
+const name = (process.env.ADMIN_NAME ?? "wan jundi").trim();
 
-if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || password.length < 8 || password.length > 100 || !name || name.length > 100) {
-  console.error("Set ADMIN_EMAIL, ADMIN_PASSWORD (8-100 chars), and ADMIN_NAME before bootstrapping.");
+if (email !== requiredEmail || password.length < 8 || password.length > 100 || !name || name.length > 100) {
+  console.error(`Set ADMIN_EMAIL=${requiredEmail}, ADMIN_PASSWORD (8-100 chars), and ADMIN_NAME before bootstrapping.`);
   process.exit(1);
 }
 
@@ -21,23 +22,29 @@ const credentials = await createPasswordFields(password);
 const sqlValue = (value) => `'${String(value).replaceAll("'", "''")}'`;
 const sql = `
 PRAGMA foreign_keys = ON;
+BEGIN TRANSACTION;
+DELETE FROM auth_sessions
+WHERE user_id IN (SELECT id FROM users WHERE role = 'admin' OR lower(COALESCE(email, '')) = ${sqlValue(email)});
+UPDATE users SET role = 'member', status = 'disabled', updated_at = datetime('now')
+WHERE role = 'admin' AND lower(COALESCE(email, '')) <> ${sqlValue(email)};
 INSERT INTO people (
   id, name, nickname, mentor_id, cohort_id, relation_scope, bio,
   is_featured, status, destination, role, joined_at, tags_json
 ) VALUES (
   ${sqlValue(personId)}, ${sqlValue(name)}, NULL, NULL, NULL, 'cohort_guest',
-  '本地开发管理员账号。', 0, 'active', NULL, '本地管理员', date('now'), '[]'
+  '本地环境超级管理员账号。', 0, 'active', NULL, '超级管理员', date('now'), '[]'
 ) ON CONFLICT(id) DO UPDATE SET name = excluded.name, updated_at = datetime('now');
 INSERT INTO users (
   id, person_id, role, status, email, display_name,
-  password_salt, password_hash, is_local_demo
+  password_salt, password_hash
 ) VALUES (
   ${sqlValue(accountId)}, ${sqlValue(personId)}, 'admin', 'active', ${sqlValue(email)},
-  ${sqlValue(name)}, ${sqlValue(credentials.passwordSalt)}, ${sqlValue(credentials.passwordHash)}, 1
+  ${sqlValue(name)}, ${sqlValue(credentials.passwordSalt)}, ${sqlValue(credentials.passwordHash)}
 ) ON CONFLICT(id) DO UPDATE SET
   role = 'admin', status = 'active', email = excluded.email,
   display_name = excluded.display_name, password_salt = excluded.password_salt,
-  password_hash = excluded.password_hash, is_local_demo = 1, updated_at = datetime('now');
+  password_hash = excluded.password_hash, updated_at = datetime('now');
+COMMIT;
 `;
 
 const pnpmCli = process.env.npm_execpath;

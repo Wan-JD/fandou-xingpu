@@ -4,7 +4,6 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev -c wrangler.local.toml",
-    "dev:memory": "wrangler dev",
     "dev:d1": "wrangler dev -c wrangler.local.toml",
     "db:migrate:local": "wrangler d1 migrations apply DB --local -c wrangler.local.toml",
     "db:bootstrap:local": "node --experimental-strip-types scripts/bootstrap-local-admin.mjs",

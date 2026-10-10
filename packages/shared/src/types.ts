@@ -36,6 +36,16 @@ export interface PersonNode extends PersonSummary {
   joinedAt: string;
   tags: string[];
   bio: string;
+  contactEmail?: string | null;
+  education?: string | null;
+  experience?: string | null;
+  skills?: string[];
+  links?: ProfileLink[];
+}
+
+export interface ProfileLink {
+  label: string;
+  url: string;
 }
 
 export interface TreeEdge {
@@ -49,7 +59,6 @@ export interface TreeResponse {
   nodes: PersonNode[];
   edges: TreeEdge[];
   generatedAt: string;
-  demo: boolean;
 }
 
 export interface Achievement {
@@ -85,6 +94,11 @@ export interface PersonDetail extends PersonSummary {
   mentor: PersonSummary | null;
   students: PersonSummary[];
   bio: string;
+  contactEmail: string | null;
+  education: string | null;
+  experience: string | null;
+  skills: string[];
+  links: ProfileLink[];
   featuredNote: string | null;
   resume: AttachmentSummary | null;
   achievements: Achievement[];
@@ -110,7 +124,6 @@ export interface ApiResponse<T> {
   data: T;
   requestId?: string;
   meta?: {
-    demo?: boolean;
     total?: number;
     limit?: number;
     query?: string;
@@ -132,6 +145,11 @@ export interface PersonUpdateInput {
   bio?: string;
   nickname?: string | null;
   destination?: Destination | null;
+  contactEmail?: string | null;
+  education?: string | null;
+  experience?: string | null;
+  skills?: string[];
+  links?: ProfileLink[];
   version: number;
 }
 

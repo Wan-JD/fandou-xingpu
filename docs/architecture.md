@@ -23,15 +23,15 @@
 当前 API 已实现的返回形状如下：
 
 - `GET /api/health` 返回 `{ data: { ok, environment, timestamp }, ok, environment, timestamp }`，保留顶层字段兼容早期前端。
-- `GET /api/tree` 返回 `{ data: { rootPersonId, nodes, edges, generatedAt, demo }, meta }`。`nodes` 是树节点摘要，`edges` 的方向为 `mentorId -> studentId`。
+- `GET /api/tree` 返回 `{ data: { rootPersonId, nodes, edges, generatedAt }, meta }`。`nodes` 是树节点摘要，`edges` 的方向为 `mentorId -> studentId`。
 - `GET /api/people/:id` 返回包含 `mentor`、`students`、`bio`、`achievements`、`attachments` 和版本时间字段的详情；找不到人物时返回 `{ error: { code, message } }` 与 HTTP 404。
 - `GET /api/people/search?q=...&limit=...` 返回 `{ data: { items, total }, meta }`；`q` 必填，`limit` 范围为 1–100。
 - `GET /api/cohorts` 和 `GET /api/cohorts/:id` 返回届次及其人物摘要；找不到届次时返回标准错误 JSON 与 HTTP 404。
 - 账号、资料编辑和一次性邀请流程见 [auth-and-invites.md](./auth-and-invites.md)。没有邀请码的注册请求固定返回 `403 INVITE_REQUIRED`。
 - `/api/admin/*` 统一校验有效 D1 Bearer 会话及 `admin` 角色，提供人物、届次、账号、邀请撤销和审计日志管理。人物关系由 API 预检与 D1 trigger 双重拒绝 missing/self/cycle 及非法归属。
 
-演示数据的届次标签统一为 `YYYY届`，届次按年份归一化，不区分春季或秋季。`pnpm test:contracts` 会检查人物、节点和边的 id 一致性、唯一根节点及师徒链连续性。
+初始化数据的届次标签统一为 `YYYY届`，届次按年份归一化，不区分春季或秋季。`pnpm test:contracts` 会检查人物、节点和边的 id 一致性、唯一根节点及师徒链连续性。
 
 ## 数据与迁移
 
-`0001` 建立基础结构，`0003` 增加账号凭据、会话、邀请和虚构本地展示资料，`0004` 增加管理员审计、邀请撤销、谱系 trigger 和本地账号标记，后续迁移补充内容会话。生产新库必须按 [部署文档](./deployment.md) 显式清理虚构 fixtures。附件表只保存 R2 对象元数据；对象上传状态使用 `pending`/`ready`/`deleted`，以便处理 D1 与 R2 不是同一事务的情况。
+`0001` 建立基础结构，`0003` 增加账号凭据、会话和邀请，`0004` 增加管理员审计、邀请撤销和谱系 trigger，后续迁移补充内容会话与资料字段。`0007` 清理历史版本遗留的精确 fixture id 并移除本地标记；新库不会写入预置账号或人物。附件表只保存 R2 对象元数据；对象上传状态使用 `pending`/`ready`/`deleted`，以便处理 D1 与 R2 不是同一事务的情况。

@@ -11,26 +11,19 @@ type Destination = "big_tech" | "postgraduate_985" | "postgraduate_211" | "start
 type Cohort = { id: string; label: string; year: number | null; sortOrder: number };
 type Achievement = { id: string; kind: "achievement" | "honor"; title: string; content: string; occurredOn: string | null; version: number };
 type Attachment = { id: string; originalName: string; mimeType: string; size: number; category: string; visibility: string; url: string | null };
-type Person = { id: string; name: string; nickname: string | null; avatarUrl: string | null; cohort: Cohort | null; relationScope: "lineage" | "cohort_guest"; isFeatured: boolean; status: Status; destination: Destination | null; mentorId: string | null; depth: number | null; directStudentIds: string[]; role: string; joinedAt: string; tags: string[]; bio: string; version?: number; mentor?: Person | null; students?: Person[]; achievements?: Achievement[]; attachments?: Attachment[]; featuredNote?: string | null };
+type ProfileLink = { label: string; url: string };
+type Person = { id: string; name: string; nickname: string | null; avatarUrl: string | null; cohort: Cohort | null; relationScope: "lineage" | "cohort_guest"; isFeatured: boolean; status: Status; destination: Destination | null; mentorId: string | null; depth: number | null; directStudentIds: string[]; role: string; joinedAt: string; tags: string[]; bio: string; contactEmail?: string | null; education?: string | null; experience?: string | null; skills?: string[]; links?: ProfileLink[]; resume?: Attachment | null; version?: number; mentor?: Person | null; students?: Person[]; achievements?: Achievement[]; attachments?: Attachment[]; featuredNote?: string | null };
 type Edge = { id: string; mentorId: string; studentId: string };
-type Tree = { rootPersonId: string | null; nodes: Person[]; edges: Edge[]; generatedAt: string; demo: boolean };
+type Tree = { rootPersonId: string | null; nodes: Person[]; edges: Edge[]; generatedAt: string };
 type LinkSegment = { id: string; mentorId: string; studentId: string; path: string; x1: number; y1: number; x2: number; y2: number; crossCohort: boolean };
 type Tone = "gold" | "aqua" | "fog";
 type SessionUser = { id: string; email: string; displayName: string; personId: string; role: "member" | "admin" };
 type AuthMode = "login" | "register";
 
-const fallbackPeople: Person[] = [
-  { id: "demo-person-001", name: "林砚", nickname: "砚叔", avatarUrl: null, cohort: { id: "cohort-2019", label: "2019 届", year: 2019, sortOrder: 0 }, relationScope: "lineage", isFeatured: true, status: "archived", destination: "startup", mentorId: null, depth: 0, directStudentIds: ["demo-person-002", "demo-person-003"], role: "发起人 / 产品顾问", joinedAt: "2019-06-18", tags: ["产品", "社区"], bio: "从一张白纸开始，记录每一次认真连接。" },
-  { id: "demo-person-002", name: "周予安", nickname: null, avatarUrl: null, cohort: { id: "cohort-2021", label: "2021 届", year: 2021, sortOrder: 1 }, relationScope: "lineage", isFeatured: false, status: "archived", destination: "big_tech", mentorId: "demo-person-001", depth: 1, directStudentIds: ["demo-person-004", "demo-person-005"], role: "全栈开发者", joinedAt: "2021-03-22", tags: ["工程", "开源"], bio: "喜欢把复杂的问题拆成可以一起走的路。" },
-  { id: "demo-person-003", name: "许棠", nickname: null, avatarUrl: null, cohort: { id: "cohort-2021", label: "2021 届", year: 2021, sortOrder: 1 }, relationScope: "lineage", isFeatured: false, status: "archived", destination: "postgraduate_985", mentorId: "demo-person-001", depth: 1, directStudentIds: ["demo-person-006"], role: "研究与内容", joinedAt: "2021-04-08", tags: ["研究", "写作"], bio: "在资料、田野和人之间，寻找能被传下去的东西。" },
-  { id: "demo-person-004", name: "苏禾", nickname: null, avatarUrl: null, cohort: { id: "cohort-2023", label: "2023 届", year: 2023, sortOrder: 2 }, relationScope: "lineage", isFeatured: false, status: "archived", destination: "postgraduate_211", mentorId: "demo-person-002", depth: 2, directStudentIds: [], role: "交互设计师", joinedAt: "2023-09-01", tags: ["设计", "体验"], bio: "让每一个重要的瞬间都被好好看见。" },
-  { id: "demo-person-005", name: "陈放", nickname: null, avatarUrl: null, cohort: { id: "cohort-2023", label: "2023 届", year: 2023, sortOrder: 2 }, relationScope: "lineage", isFeatured: false, status: "archived", destination: "other", mentorId: "demo-person-002", depth: 2, directStudentIds: [], role: "数据工程师", joinedAt: "2023-10-12", tags: ["数据", "工具"], bio: "把看不见的结构，整理成可被理解的秩序。" },
-  { id: "demo-person-006", name: "唐宁", nickname: null, avatarUrl: null, cohort: { id: "cohort-2024", label: "2024 届", year: 2024, sortOrder: 3 }, relationScope: "lineage", isFeatured: false, status: "active", destination: "further_study", mentorId: "demo-person-003", depth: 2, directStudentIds: [], role: "社会创新实践者", joinedAt: "2024-03-16", tags: ["公益", "组织"], bio: "在真实世界里验证每一个好想法。" },
-];
-const fallbackTree: Tree = { rootPersonId: "demo-person-001", nodes: fallbackPeople, edges: fallbackPeople.slice(1).map((person) => ({ id: `edge-${person.id}`, mentorId: person.mentorId!, studentId: person.id })), generatedAt: "2026-10-08T00:00:00.000Z", demo: true };
+const emptyTree: Tree = { rootPersonId: null, nodes: [], edges: [], generatedAt: new Date(0).toISOString() };
 
 const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-const tree = ref<Tree>(fallbackTree);
+const tree = ref<Tree>(emptyTree);
 const loading = ref(true);
 const apiFailed = ref(false);
 const query = ref("");
@@ -50,7 +43,7 @@ const nodeRefs = new Map<string, HTMLElement>();
 const links = ref<LinkSegment[]>([]);
 const canvasSize = ref({ width: 0, height: 0 });
 const popupPosition = ref({ left: 0, top: 0, arrow: 0 });
-const sessionToken = ref(localStorage.getItem("fandou-demo-session"));
+const sessionToken = ref(localStorage.getItem("fandou-session"));
 const sessionUser = ref<SessionUser | null>(null);
 const sessionLoading = ref(Boolean(sessionToken.value));
 const authOpen = ref(false);
@@ -62,11 +55,12 @@ const profileEditing = ref(false);
 const profileSaving = ref(false);
 const profileError = ref<string | null>(null);
 const profileSaved = ref(false);
-const profileForm = ref<{ nickname: string; bio: string; destination: Destination | "" }>({ nickname: "", bio: "", destination: "" });
+const profileForm = ref<{ nickname: string; bio: string; destination: Destination | ""; contactEmail: string; education: string; experience: string; skills: string; links: string }>({ nickname: "", bio: "", destination: "", contactEmail: "", education: "", experience: "", skills: "", links: "" });
 const achievementForm = ref({ kind: "achievement" as "achievement" | "honor", title: "", content: "" });
 const achievementSaving = ref(false);
 const uploadSaving = ref(false);
 const uploadError = ref("");
+const uploadCategory = ref<"avatar" | "resume" | "photo">("photo");
 let starfield: Starfield | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let centeredOnce = false;
@@ -216,9 +210,10 @@ function setNodeRef(id: string, element: Element | null) {
   if (element instanceof HTMLElement) nodeRefs.set(id, element);
   else nodeRefs.delete(id);
 }
-function normaliseNode(node: Record<string, unknown>, index: number): Person {
-  const source = fallbackPeople.find((person) => person.id === node.id) ?? {
-    id: String(node.id ?? `remote-person-${index}`), name: String(node.name ?? "未命名成员"), nickname: null, avatarUrl: null,
+function normaliseNode(node: Record<string, unknown>): Person {
+  if (typeof node.id !== "string" || !node.id.trim() || typeof node.name !== "string" || !node.name.trim()) throw new Error("invalid person");
+  const source = {
+    id: node.id, name: node.name, nickname: null, avatarUrl: null,
     cohort: null, relationScope: "cohort_guest" as const, isFeatured: false, status: "active" as const, destination: null,
     mentorId: null, depth: null, directStudentIds: [], role: "星谱成员", joinedAt: "", tags: [], bio: "",
   };
@@ -230,23 +225,25 @@ function normaliseNode(node: Record<string, unknown>, index: number): Person {
   const directStudentIds = Array.isArray(node.directStudentIds) ? node.directStudentIds.map(String) : source.directStudentIds;
   const destination = isDestination(node.destination) ? node.destination : null;
   const nickname = Object.prototype.hasOwnProperty.call(node, "nickname") ? (node.nickname == null ? null : String(node.nickname)) : source.nickname;
-  return { ...source, ...node, id: String(node.id ?? source.id), name: String(node.name ?? source.name), cohort, destination, version: Number(node.version ?? source.version ?? 1), mentorId: node.mentorId == null ? source.mentorId : String(node.mentorId), directStudentIds, nickname, avatarUrl: node.avatarUrl == null ? source.avatarUrl : String(node.avatarUrl), role: String(node.role ?? source.role), joinedAt: String(node.joinedAt ?? source.joinedAt), tags: Array.isArray(node.tags) ? node.tags.map(String) : source.tags, bio: String(node.bio ?? source.bio) } as Person;
+  const skills = Array.isArray(node.skills) ? node.skills.filter((skill): skill is string => typeof skill === "string" && Boolean(skill.trim())) : [];
+  const profileLinks = Array.isArray(node.links) ? node.links.filter((link): link is ProfileLink => Boolean(link && typeof link === "object" && typeof (link as ProfileLink).label === "string" && typeof (link as ProfileLink).url === "string")) : [];
+  return { ...source, ...node, id: source.id, name: source.name, cohort, destination, version: Number(node.version ?? 1), mentorId: node.mentorId == null ? null : String(node.mentorId), directStudentIds, nickname, avatarUrl: node.avatarUrl == null ? null : String(node.avatarUrl), role: String(node.role ?? source.role), joinedAt: String(node.joinedAt ?? ""), tags: Array.isArray(node.tags) ? node.tags.map(String) : [], bio: String(node.bio ?? ""), contactEmail: node.contactEmail == null ? null : String(node.contactEmail), education: node.education == null ? null : String(node.education), experience: node.experience == null ? null : String(node.experience), skills, links: profileLinks } as Person;
 }
 async function loadTree() {
   loading.value = true;
   try {
     const response = await fetch("/api/tree");
     if (!response.ok) throw new Error("tree unavailable");
-    const payload = await response.json() as { data?: { nodes?: Record<string, unknown>[]; edges?: Edge[]; rootPersonId?: string; generatedAt?: string; demo?: boolean } };
+    const payload = await response.json() as { data?: { nodes?: Record<string, unknown>[]; edges?: Edge[]; rootPersonId?: string; generatedAt?: string } };
     if (!Array.isArray(payload.data?.nodes)) throw new Error("invalid tree");
     const nodes = payload.data.nodes.map(normaliseNode);
     const ids = new Set(nodes.map((person) => person.id));
     const edges = (payload.data.edges ?? []).filter((edge) => ids.has(edge.mentorId) && ids.has(edge.studentId)).map((edge) => ({ id: String(edge.id ?? `${edge.mentorId}::${edge.studentId}`), mentorId: String(edge.mentorId), studentId: String(edge.studentId) }));
-    tree.value = { rootPersonId: payload.data.rootPersonId && ids.has(payload.data.rootPersonId) ? payload.data.rootPersonId : (nodes[0]?.id ?? null), nodes, edges, generatedAt: payload.data.generatedAt ?? new Date().toISOString(), demo: Boolean(payload.data.demo) };
+    tree.value = { rootPersonId: payload.data.rootPersonId && ids.has(payload.data.rootPersonId) ? payload.data.rootPersonId : (nodes[0]?.id ?? null), nodes, edges, generatedAt: payload.data.generatedAt ?? new Date().toISOString() };
     apiFailed.value = false;
   } catch {
     apiFailed.value = true;
-    tree.value = fallbackTree;
+    tree.value = emptyTree;
   } finally {
     expanded.value = Object.fromEntries(groups.value.map((group) => [group.cohort.id, true]));
     loading.value = false;
@@ -266,7 +263,7 @@ async function apiErrorMessage(response: Response, fallback: string) {
 function clearSession() {
   sessionToken.value = null;
   sessionUser.value = null;
-  localStorage.removeItem("fandou-demo-session");
+  localStorage.removeItem("fandou-session");
   profileEditing.value = false;
 }
 async function loadSession() {
@@ -313,7 +310,7 @@ async function submitAuth() {
     if (!payload.data?.token || !payload.data.user) throw new Error("会话数据不完整");
     sessionToken.value = payload.data.token;
     sessionUser.value = payload.data.user;
-    localStorage.setItem("fandou-demo-session", payload.data.token);
+    localStorage.setItem("fandou-session", payload.data.token);
     authOpen.value = false;
     navigate(`/person/${encodeURIComponent(payload.data.user.personId)}`);
   } catch (error) {
@@ -336,7 +333,11 @@ function openMyProfile() {
 }
 function startProfileEdit() {
   if (!detail.value || !isOwnDetail.value) return;
-  profileForm.value = { nickname: detail.value.nickname ?? "", bio: detail.value.bio, destination: detail.value.destination ?? "" };
+  profileForm.value = {
+    nickname: detail.value.nickname ?? "", bio: detail.value.bio, destination: detail.value.destination ?? "",
+    contactEmail: detail.value.contactEmail ?? "", education: detail.value.education ?? "", experience: detail.value.experience ?? "",
+    skills: (detail.value.skills ?? []).join(", "), links: (detail.value.links ?? []).map((link) => `${link.label} | ${link.url}`).join("\n"),
+  };
   profileError.value = null;
   profileSaved.value = false;
   profileEditing.value = true;
@@ -357,7 +358,15 @@ async function saveProfile() {
     const response = await fetch("/api/me/profile", {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ nickname: profileForm.value.nickname.trim() || null, bio: profileForm.value.bio.trim(), destination: profileForm.value.destination || null, version: person.version ?? 1 }),
+      body: JSON.stringify({
+        nickname: profileForm.value.nickname.trim() || null,
+        bio: profileForm.value.bio.trim(), destination: profileForm.value.destination || null,
+        contactEmail: profileForm.value.contactEmail.trim() || null,
+        education: profileForm.value.education.trim() || null, experience: profileForm.value.experience.trim() || null,
+        skills: profileForm.value.skills.split(",").map((item) => item.trim()).filter(Boolean),
+        links: profileForm.value.links.split("\n").map((line) => line.split("|")).map(([label, url]) => ({ label: (label ?? "").trim(), url: (url ?? "").trim() })).filter((link) => link.label && link.url),
+        version: person.version ?? 1,
+      }),
     });
     if (response.status === 401) {
       clearSession();
@@ -367,9 +376,9 @@ async function saveProfile() {
     if (!response.ok) throw new Error(await apiErrorMessage(response, "资料保存失败"));
     const payload = await response.json() as { data?: Record<string, unknown> };
     if (!payload.data) throw new Error("资料响应为空");
-    const updated = normaliseNode({ ...person, ...payload.data, id: person.id }, 0);
+    const updated = normaliseNode({ ...person, ...payload.data, id: person.id });
     detailPerson.value = updated;
-    tree.value.nodes = tree.value.nodes.map((node) => node.id === updated.id ? { ...node, nickname: updated.nickname, bio: updated.bio, destination: updated.destination, version: updated.version } : node);
+    tree.value.nodes = tree.value.nodes.map((node) => node.id === updated.id ? { ...node, nickname: updated.nickname, bio: updated.bio, destination: updated.destination, version: updated.version, contactEmail: updated.contactEmail, education: updated.education, experience: updated.experience, skills: updated.skills, links: updated.links } : node);
     profileEditing.value = false;
     profileSaved.value = true;
   } catch (error) {
@@ -396,11 +405,14 @@ async function uploadAttachment(event: Event) {
   if (!file || !sessionToken.value || !isOwnDetail.value) return;
   uploadSaving.value = true; uploadError.value = "";
   try {
-    const form = new FormData(); form.append("file", file); form.append("category", file.type === "application/pdf" ? "resume" : "photo"); form.append("visibility", "members");
+    const form = new FormData(); form.append("file", file); form.append("category", uploadCategory.value); form.append("visibility", "members");
     const response = await fetch("/api/me/attachments", { method: "POST", headers: { Authorization: `Bearer ${sessionToken.value}` }, body: form });
     if (!response.ok) throw new Error(await apiErrorMessage(response, "附件上传失败"));
     const payload = await response.json() as { data?: Attachment };
-    if (payload.data && detailPerson.value) detailPerson.value = { ...detailPerson.value, attachments: [payload.data, ...(detailPerson.value.attachments ?? [])] };
+    if (payload.data && detailPerson.value) {
+      detailPerson.value = { ...detailPerson.value, avatarUrl: uploadCategory.value === "avatar" ? `/api/attachments/${payload.data.id}` : detailPerson.value.avatarUrl, resume: uploadCategory.value === "resume" ? payload.data : detailPerson.value.resume, attachments: [payload.data, ...(detailPerson.value.attachments ?? [])] };
+      if (uploadCategory.value === "avatar") tree.value.nodes = tree.value.nodes.map((node) => node.id === detailPerson.value?.id ? { ...node, avatarUrl: `/api/attachments/${payload.data!.id}` } : node);
+    }
   } catch (error) { uploadError.value = error instanceof Error ? error.message : "附件上传失败"; }
   finally { uploadSaving.value = false; input.value = ""; }
 }
@@ -428,7 +440,7 @@ function navigate(path: string) {
     if (routeId) {
       let id = routeId;
       try { id = decodeURIComponent(routeId); } catch { /* keep the encoded id for the API */ }
-      const local = people.value.find((person) => person.id === id) ?? fallbackPeople.find((person) => person.id === id);
+      const local = people.value.find((person) => person.id === id);
       if (local) void openDetail(local);
       else void openDetailById(id);
     }
@@ -449,7 +461,7 @@ async function openDetail(person: Person) {
 }
 async function openDetailById(id: string, localPerson?: Person) {
   const requestId = ++detailRequestId;
-  const fallback = localPerson ?? people.value.find((person) => person.id === id) ?? fallbackPeople.find((person) => person.id === id) ?? null;
+  const fallback = localPerson ?? people.value.find((person) => person.id === id) ?? null;
   detailLoading.value = true;
   detailError.value = null;
   detailPerson.value = fallback;
@@ -458,7 +470,7 @@ async function openDetailById(id: string, localPerson?: Person) {
     if (!response.ok) throw new Error(response.status === 404 ? "档案不存在" : "档案暂时无法读取");
     const payload = await response.json() as { data?: Record<string, unknown> };
     if (!payload.data) throw new Error("档案数据为空");
-    if (requestId === detailRequestId) detailPerson.value = normaliseNode({ ...(fallback ?? {}), ...payload.data, id }, 0);
+    if (requestId === detailRequestId) detailPerson.value = normaliseNode({ ...(fallback ?? {}), ...payload.data, id });
   } catch (error) {
     if (requestId !== detailRequestId) return;
     detailError.value = error instanceof Error ? error.message : "档案暂时无法读取";
@@ -575,8 +587,8 @@ onUnmounted(() => {
       </a>
       <div class="header-meta">
         <span class="status-dot" :class="{ offline: apiFailed }"></span>
-        <span>{{ apiFailed ? "本地演示资料" : "星谱已连接" }}</span>
-        <span class="read-only">{{ tree.demo ? "演示资料" : "公开档案" }}</span>
+        <span>{{ apiFailed ? "星谱暂离线" : "星谱已连接" }}</span>
+        <span class="read-only">公开档案</span>
         <button class="account-entry" type="button" :disabled="sessionLoading" @click="openMyProfile">
           <span class="account-orb" aria-hidden="true"></span>
           {{ sessionLoading ? "读取账号" : (sessionUser?.displayName ?? "登录 / 加入") }}
@@ -627,8 +639,8 @@ onUnmounted(() => {
       <section ref="stageRef" class="star-stage" aria-label="成员星谱">
         <div v-if="loading" class="state-message"><span class="loading-ring"></span>正在整理星谱</div>
         <template v-else>
-          <div v-if="apiFailed" class="state-message" role="status">连接暂时中断，当前显示本地演示资料。<button class="back-link" type="button" @click="loadTree">重新连接</button></div>
-          <div v-if="!people.length" class="state-message empty">星谱中还没有人物档案。</div>
+          <div v-if="apiFailed" class="state-message" role="status">星海暂时起雾，请稍后重新连接。<button class="back-link" type="button" @click="loadTree">重新连接</button></div>
+          <div v-else-if="!people.length" class="state-message empty">还没有星星入谱，第一束光正在路上。</div>
           <div class="star-stage-meta"><span>ROOT TO CONSTELLATION</span><span>更新于 {{ tree.generatedAt.slice(0, 10) }}</span></div>
           <div v-if="people.length" ref="scrollRef" class="tree-scroll" @scroll.passive="onTreeScroll">
             <div ref="canvasRef" class="tree-canvas" :style="{ '--span': layout.span }" @animationend="onStarSettled">
@@ -716,7 +728,7 @@ onUnmounted(() => {
           </div>
         </template>
       </section>
-      <footer class="page-footer"><span>翻斗星谱 · {{ tree.demo ? "早期演示版" : "公开档案" }}</span><span>{{ tree.demo ? "资料仅用于界面演示，真实成员档案接入中" : "成员资料持续更新中" }}</span></footer>
+      <footer class="page-footer"><span>翻斗星谱 · 公开档案</span><span>成员资料持续更新中</span></footer>
     </main>
     <main v-else class="detail-page" aria-live="polite">
       <button class="back-link" type="button" @click="navigate('/')">← 返回星谱</button>
@@ -731,7 +743,7 @@ onUnmounted(() => {
           <p class="detail-role">{{ detail.role }}</p>
           <span v-if="detail.destination" class="destination-badge detail-destination" :class="destinationClass(detail)">去向 · {{ destinationLabel(detail) }}</span>
           <div class="tag-row"><span v-for="tag in detail.tags" :key="tag" class="tag">{{ tag }}</span></div>
-          <span class="record-note" :class="{ graduated: detail.status === 'archived' }"><i></i>{{ relationLabel(detail) }} · {{ tree.demo ? "演示资料" : "公开档案" }}</span>
+          <span class="record-note" :class="{ graduated: detail.status === 'archived' }"><i></i>{{ relationLabel(detail) }} · 公开档案</span>
           <button v-if="isOwnDetail" class="profile-edit-trigger" type="button" @click="startProfileEdit">编辑我的资料</button>
           <p v-if="isOwnDetail && profileSaved" class="profile-success" role="status">资料已保存</p>
         </section>
@@ -754,6 +766,11 @@ onUnmounted(() => {
                   <option v-for="(label, value) in destinationLabels" :key="value" :value="value">{{ label }}</option>
                 </select>
               </label>
+              <label class="form-field"><span>联系邮箱（仅本人和管理员可见）</span><input v-model="profileForm.contactEmail" type="email" maxlength="254" placeholder="可留空" /></label>
+              <label class="form-field"><span>教育经历</span><textarea v-model="profileForm.education" maxlength="10000" rows="3" placeholder="学校、专业、研究方向等，可留空"></textarea></label>
+              <label class="form-field"><span>工作 / 项目经历</span><textarea v-model="profileForm.experience" maxlength="20000" rows="4" placeholder="可留空"></textarea></label>
+              <label class="form-field"><span>技能（用逗号分隔）</span><input v-model="profileForm.skills" maxlength="2400" placeholder="例如：产品设计，TypeScript，写作" /></label>
+              <label class="form-field"><span>个人链接（每行：名称 | URL）</span><textarea v-model="profileForm.links" maxlength="10000" rows="3" placeholder="作品集 | https://example.com"></textarea></label>
               <p v-if="profileError" class="form-error" role="alert">{{ profileError }}</p>
               <div class="form-actions">
                 <button class="secondary-command" type="button" :disabled="profileSaving" @click="cancelProfileEdit">取消</button>
@@ -763,11 +780,17 @@ onUnmounted(() => {
           </article>
           <article class="detail-section">
             <span class="section-label">01 / 简介</span>
-            <p class="detail-copy">{{ detail.bio }}</p>
+            <p v-if="detail.bio" class="detail-copy">{{ detail.bio }}</p>
+            <div v-else class="empty-detail"><span>✦</span><p>这颗星还在积攒星尘，简介稍后回来。</p></div>
           </article>
+          <article v-if="detail.education" class="detail-section"><span class="section-label">02 / 教育经历</span><p class="detail-copy profile-preline">{{ detail.education }}</p></article>
+          <article v-if="detail.experience" class="detail-section"><span class="section-label">03 / 工作与项目</span><p class="detail-copy profile-preline">{{ detail.experience }}</p></article>
+          <article v-if="detail.skills?.length" class="detail-section"><span class="section-label">04 / 技能</span><div class="tag-row"><span v-for="skill in detail.skills" :key="skill" class="tag">{{ skill }}</span></div></article>
+          <article v-if="detail.links?.length" class="detail-section"><span class="section-label">05 / 个人链接</span><div class="profile-content-list"><a v-for="link in detail.links" :key="link.url" class="content-item attachment-item" :href="link.url" target="_blank" rel="noreferrer"><strong>{{ link.label }}</strong><p>{{ link.url }}</p></a></div></article>
+          <article v-if="detail.contactEmail" class="detail-section"><span class="section-label">06 / 联系方式</span><a class="content-item attachment-item" :href="`mailto:${detail.contactEmail}`">{{ detail.contactEmail }}</a></article>
           <article class="detail-section split-section">
             <div>
-              <span class="section-label">02 / 关系</span>
+              <span class="section-label">07 / 关系</span>
               <h2>{{ detailMentor ? "沿着一条主线继续" : "谱系起点" }}</h2>
               <p>{{ detailMentor ? "这位成员从上一届连接而来，并把自己的经验继续传给下一位。" : "从这里出发，连接仍在发生。" }}</p>
               <button v-if="detailMentor" class="popover-detail" type="button" @click="viewDetail(detailMentor)">师傅：{{ detailMentor.name }} <span aria-hidden="true">↗</span></button>
@@ -778,22 +801,22 @@ onUnmounted(() => {
               </div>
             </div>
             <div>
-              <span class="section-label">03 / 加入时间</span>
+              <span class="section-label">08 / 加入时间</span>
               <h2>{{ detail.joinedAt }}</h2>
               <p>{{ formatCohort(detail.cohort) }}</p>
             </div>
           </article>
           <article class="detail-section">
-            <span class="section-label">04 / 事迹与附件</span>
+            <span class="section-label">09 / 事迹与附件</span>
             <div v-if="detailAchievements.length || detailAttachments.length" class="profile-content-list">
               <article v-for="item in detailAchievements" :key="item.id" class="content-item"><strong>{{ item.kind === 'honor' ? '荣誉' : '事迹' }} · {{ item.title }}</strong><p>{{ item.content }}</p></article>
-              <a v-for="item in detailAttachments" :key="item.id" class="content-item attachment-item" :href="item.url ?? `/api/attachments/${item.id}`" target="_blank" rel="noreferrer">{{ item.originalName }} <span>· {{ item.visibility === 'private' ? '仅自己可见' : '成员可见' }}</span></a>
+              <a v-for="item in detailAttachments" :key="item.id" class="content-item attachment-item" :href="item.url ?? `/api/attachments/${item.id}`" target="_blank" rel="noreferrer">{{ item.category === 'resume' ? '简历' : item.category === 'photo' ? '照片' : item.category === 'avatar' ? '头像' : '附件' }} · {{ item.originalName }} <span>· {{ item.visibility === 'private' ? '仅自己可见' : '成员可见' }}</span></a>
             </div>
-            <div v-else class="empty-detail"><span>＋</span><p>尚未添加事迹、荣誉或附件。</p></div>
+            <div v-else class="empty-detail"><span>✦</span><p>星尘还没有留下记录，等一段故事抵达这里。</p></div>
             <form v-if="isOwnDetail && sessionToken" class="content-editor" @submit.prevent="addAchievement">
               <div class="content-editor-row"><select v-model="achievementForm.kind"><option value="achievement">事迹</option><option value="honor">荣誉</option></select><input v-model.trim="achievementForm.title" maxlength="200" placeholder="标题" required /></div>
               <textarea v-model.trim="achievementForm.content" maxlength="20000" rows="3" placeholder="写下这段经历" required></textarea>
-              <div class="form-actions"><label class="upload-button">{{ uploadSaving ? '上传中…' : '上传附件' }}<input type="file" accept="image/jpeg,image/png,image/webp,application/pdf" :disabled="uploadSaving" @change="uploadAttachment" /></label><button class="primary-command" type="submit" :disabled="achievementSaving">{{ achievementSaving ? '保存中…' : '添加记录' }}</button></div>
+              <div class="form-actions"><select v-model="uploadCategory" class="upload-category"><option value="avatar">头像</option><option value="resume">简历</option><option value="photo">照片</option></select><label class="upload-button">{{ uploadSaving ? '上传中…' : '上传文件' }}<input type="file" :accept="uploadCategory === 'resume' ? 'application/pdf' : 'image/jpeg,image/png,image/webp'" :disabled="uploadSaving" @change="uploadAttachment" /></label><button class="primary-command" type="submit" :disabled="achievementSaving">{{ achievementSaving ? '保存中…' : '添加记录' }}</button></div>
               <p v-if="uploadError" class="form-error" role="alert">{{ uploadError }}</p>
             </form>
           </article>
@@ -805,7 +828,7 @@ onUnmounted(() => {
         <span>{{ detailLoading ? "正在读取档案" : (detailError ?? "没有找到这份档案") }}</span>
         <button v-if="detailError" type="button" @click="detailRouteId && openDetailById(detailRouteId)">重试</button>
       </div>
-      <p v-if="detail && detailError" class="state-message" role="status">{{ detailError }}，当前显示本地演示资料。</p>
+      <p v-if="detail && detailError" class="state-message" role="status">{{ detailError }}，当前显示已读取的档案摘要。</p>
     </main>
 
     <div v-if="authOpen" class="modal-backdrop" @click.self="closeAuth">

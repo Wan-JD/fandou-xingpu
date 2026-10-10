@@ -1,4 +1,4 @@
--- 管理后台：审计、邀请撤销、本地演示账号标记与谱系环保护。
+-- 管理后台：审计、邀请撤销、本地账号标记与谱系环保护。
 
 ALTER TABLE invitations ADD COLUMN revoked_at TEXT;
 ALTER TABLE invitations ADD COLUMN revoked_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL;
