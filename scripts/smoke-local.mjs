@@ -107,6 +107,8 @@ assert.deepEqual(concurrent.map(({ response }) => response.status).sort(), [201,
 
 const profile = await request("/api/me/profile", { token: memberSession.token });
 const profileVersion = profile.payload.data.version;
+const invalidLink = await request("/api/me/profile", { token: memberSession.token, method: "PATCH", body: { version: profileVersion, links: [{ label: "unsafe", url: "javascript:alert(1)" }] } });
+assert.equal(invalidLink.response.status, 400);
 const enrichedProfile = await request("/api/me/profile", { token: memberSession.token, method: "PATCH", body: {
   version: profileVersion,
   bio: "owner CAS update",
@@ -147,6 +149,11 @@ const avatarForm = new FormData();
 avatarForm.append("file", new Blob(["avatar"], { type: "image/png" }), "avatar.png");
 avatarForm.append("category", "avatar");
 avatarForm.append("visibility", "members");
+const invalidAvatar = new FormData();
+invalidAvatar.append("file", new Blob(["not-an-image"], { type: "application/pdf" }), "avatar.pdf");
+invalidAvatar.append("category", "avatar");
+invalidAvatar.append("visibility", "members");
+assert.equal((await requestMultipart("/api/me/attachments", { token: memberSession.token, method: "POST", form: invalidAvatar })).response.status, 415);
 const uploadedAvatar = await requestMultipart("/api/me/attachments", { token: memberSession.token, method: "POST", form: avatarForm });
 assert.equal(uploadedAvatar.response.status, 201, JSON.stringify(uploadedAvatar.payload));
 const avatarId = uploadedAvatar.payload.data.id;
@@ -156,6 +163,11 @@ const resumeForm = new FormData();
 resumeForm.append("file", new Blob(["resume"], { type: "application/pdf" }), "resume.pdf");
 resumeForm.append("category", "resume");
 resumeForm.append("visibility", "members");
+const invalidResume = new FormData();
+invalidResume.append("file", new Blob(["not-a-pdf"], { type: "image/png" }), "resume.png");
+invalidResume.append("category", "resume");
+invalidResume.append("visibility", "members");
+assert.equal((await requestMultipart("/api/me/attachments", { token: memberSession.token, method: "POST", form: invalidResume })).response.status, 415);
 const uploadedResume = await requestMultipart("/api/me/attachments", { token: memberSession.token, method: "POST", form: resumeForm });
 assert.equal(uploadedResume.response.status, 201, JSON.stringify(uploadedResume.payload));
 const resumeId = uploadedResume.payload.data.id;

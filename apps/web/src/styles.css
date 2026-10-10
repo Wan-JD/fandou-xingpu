@@ -335,6 +335,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .content-item p { margin: 7px 0 0; white-space: pre-wrap; line-height: 1.65; }
 .attachment-item:hover { border-color: rgba(142, 217, 208, .55); color: var(--aqua); }
 .attachment-item span { color: var(--muted); font-size: 12px; }
+.attachment-open, .attachment-remove { margin-right: 8px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 7px; background: rgba(8, 14, 30, .55); color: var(--aqua); font-size: 11px; }
+.attachment-remove { color: #ffb4a8; }
+.attachment-open:disabled, .attachment-remove:disabled { opacity: .55; }
 .content-editor { display: grid; gap: 10px; margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--line); }
 .content-editor-row { display: grid; grid-template-columns: 110px 1fr; gap: 8px; }
 .content-editor input, .content-editor select, .content-editor textarea { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: rgba(3, 8, 20, .7); color: var(--ink); }

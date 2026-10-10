@@ -419,10 +419,10 @@ async function uploadAttachment(event: Event) {
   } catch (error) { uploadError.value = error instanceof Error ? error.message : "附件上传失败"; }
   finally { uploadSaving.value = false; input.value = ""; }
 }
-async function openAttachment(item: Attachment) {
+async function openAttachment(item: Attachment, download = false) {
   attachmentBusyId.value = item.id;
   attachmentError.value = "";
-  const popup = window.open("", "_blank");
+  const popup = download ? null : window.open("", "_blank");
   try {
     const response = await fetch(`/api/attachments/${encodeURIComponent(item.id)}`, { headers: sessionToken.value ? { Authorization: `Bearer ${sessionToken.value}` } : {} });
     if (!response.ok) throw new Error(await apiErrorMessage(response, "附件暂时无法读取"));
@@ -432,9 +432,12 @@ async function openAttachment(item: Attachment) {
     else {
       const link = document.createElement("a");
       link.href = objectUrl;
-      link.target = "_blank";
+      if (download) link.download = item.originalName;
+      else link.target = "_blank";
       link.rel = "noreferrer";
+      document.body.appendChild(link);
       link.click();
+      link.remove();
     }
     window.setTimeout(() => { URL.revokeObjectURL(objectUrl); attachmentObjectUrls.delete(objectUrl); }, 60_000);
   } catch (error) {
@@ -860,9 +863,10 @@ onUnmounted(() => {
             <div v-if="detailAchievements.length || detailAttachments.length" class="profile-content-list">
               <article v-for="item in detailAchievements" :key="item.id" class="content-item"><strong>{{ item.kind === 'honor' ? '荣誉' : '事迹' }} · {{ item.title }}</strong><p>{{ item.content }}</p></article>
               <div v-for="item in detailAttachments" :key="item.id" class="content-item attachment-item">
-                <button class="attachment-open" type="button" :disabled="attachmentBusyId === item.id" @click="openAttachment(item)">{{ attachmentBusyId === item.id ? '处理中…' : '打开' }}</button>
+                <button class="attachment-open" type="button" :disabled="Boolean(attachmentBusyId)" @click="openAttachment(item)">{{ attachmentBusyId === item.id ? '处理中…' : '打开' }}</button>
+                <button class="attachment-open" type="button" :disabled="Boolean(attachmentBusyId)" @click="openAttachment(item, true)">下载</button>
                 <strong>{{ item.category === 'resume' ? '简历' : item.category === 'photo' ? '照片' : item.category === 'avatar' ? '头像' : '附件' }} · {{ item.originalName }}</strong> <span>· {{ item.visibility === 'private' ? '仅自己可见' : '成员可见' }}</span>
-                <button v-if="isOwnDetail && sessionToken" class="attachment-remove" type="button" :disabled="attachmentBusyId === item.id" @click="removeAttachment(item)">删除</button>
+                <button v-if="isOwnDetail && sessionToken" class="attachment-remove" type="button" :disabled="Boolean(attachmentBusyId)" @click="removeAttachment(item)">删除</button>
               </div>
             </div>
             <div v-else class="empty-detail"><span>✦</span><p>星尘还没有留下记录，等一段故事抵达这里。</p></div>
