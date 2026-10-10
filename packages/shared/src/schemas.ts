@@ -6,7 +6,7 @@ export const personStatusSchema = z.enum(["active", "archived"]);
 export const destinationSchema = z.enum(["big_tech", "postgraduate_985", "postgraduate_211", "startup", "further_study", "other"]);
 export const datePrecisionSchema = z.enum(["year", "month", "day"]);
 export const achievementKindSchema = z.enum(["achievement", "honor"]);
-export const profileLinkSchema = z.object({ label: z.string().trim().min(1).max(80), url: z.string().trim().url().max(500) }).strict();
+export const profileLinkSchema = z.object({ label: z.string().trim().min(1).max(80), url: z.string().trim().url().max(500).refine((value) => /^https?:\/\//i.test(value), "链接必须使用 HTTP 或 HTTPS 协议") }).strict();
 
 export const treeQuerySchema = z.object({
   rootPersonId: idSchema.optional(),

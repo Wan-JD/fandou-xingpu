@@ -63,6 +63,9 @@ contentApi.post("/attachments", async (c) => {
   if (!(file instanceof File)) return error(400, "FILE_REQUIRED", "请选择文件");
   const allowed = new Set(["avatar", "resume", "photo", "certificate", "other"]);
   if (!allowed.has(category) || !["members", "private"].includes(visibility)) return error(400, "VALIDATION_ERROR", "文件分类无效");
+  const imageTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
+  if ((category === "avatar" || category === "photo") && !imageTypes.has(file.type)) return error(415, "UNSUPPORTED_MEDIA_TYPE", "头像和照片仅支持 JPG、PNG 或 WebP");
+  if (category === "resume" && file.type !== "application/pdf") return error(415, "UNSUPPORTED_MEDIA_TYPE", "简历仅支持 PDF");
   const max = category === "avatar" ? 2 * 1024 * 1024 : file.type === "application/pdf" ? 10 * 1024 * 1024 : 5 * 1024 * 1024;
   if (file.size > max) return error(413, "FILE_TOO_LARGE", "文件超过大小限制");
   if (!(["image/jpeg", "image/png", "image/webp", "application/pdf"].includes(file.type))) return error(415, "UNSUPPORTED_MEDIA_TYPE", "仅支持 JPG、PNG、WebP 或 PDF");

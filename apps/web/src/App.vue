@@ -61,6 +61,9 @@ const achievementSaving = ref(false);
 const uploadSaving = ref(false);
 const uploadError = ref("");
 const uploadCategory = ref<"avatar" | "resume" | "photo">("photo");
+const attachmentBusyId = ref<string | null>(null);
+const attachmentError = ref("");
+const attachmentObjectUrls = new Set<string>();
 let starfield: Starfield | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let centeredOnce = false;
@@ -403,7 +406,7 @@ async function uploadAttachment(event: Event) {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
   if (!file || !sessionToken.value || !isOwnDetail.value) return;
-  uploadSaving.value = true; uploadError.value = "";
+  uploadSaving.value = true; uploadError.value = ""; attachmentError.value = "";
   try {
     const form = new FormData(); form.append("file", file); form.append("category", uploadCategory.value); form.append("visibility", "members");
     const response = await fetch("/api/me/attachments", { method: "POST", headers: { Authorization: `Bearer ${sessionToken.value}` }, body: form });
@@ -415,6 +418,50 @@ async function uploadAttachment(event: Event) {
     }
   } catch (error) { uploadError.value = error instanceof Error ? error.message : "附件上传失败"; }
   finally { uploadSaving.value = false; input.value = ""; }
+}
+async function openAttachment(item: Attachment) {
+  attachmentBusyId.value = item.id;
+  attachmentError.value = "";
+  const popup = window.open("", "_blank");
+  try {
+    const response = await fetch(`/api/attachments/${encodeURIComponent(item.id)}`, { headers: sessionToken.value ? { Authorization: `Bearer ${sessionToken.value}` } : {} });
+    if (!response.ok) throw new Error(await apiErrorMessage(response, "附件暂时无法读取"));
+    const objectUrl = URL.createObjectURL(await response.blob());
+    attachmentObjectUrls.add(objectUrl);
+    if (popup) popup.location.href = objectUrl;
+    else {
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      link.click();
+    }
+    window.setTimeout(() => { URL.revokeObjectURL(objectUrl); attachmentObjectUrls.delete(objectUrl); }, 60_000);
+  } catch (error) {
+    popup?.close();
+    attachmentError.value = error instanceof Error ? error.message : "附件暂时无法读取";
+  } finally {
+    attachmentBusyId.value = null;
+  }
+}
+async function removeAttachment(item: Attachment) {
+  if (!sessionToken.value || !isOwnDetail.value || attachmentBusyId.value) return;
+  attachmentBusyId.value = item.id;
+  attachmentError.value = "";
+  try {
+    const response = await fetch(`/api/me/attachments/${encodeURIComponent(item.id)}`, { method: "DELETE", headers: { Authorization: `Bearer ${sessionToken.value}` } });
+    if (!response.ok) throw new Error(await apiErrorMessage(response, "附件删除失败"));
+    const personId = detail.value?.id;
+    if (personId) {
+      await openDetailById(personId);
+      const refreshed = detailPerson.value;
+      if (refreshed) tree.value.nodes = tree.value.nodes.map((node) => node.id === refreshed.id ? { ...node, avatarUrl: refreshed.avatarUrl } : node);
+    }
+  } catch (error) {
+    attachmentError.value = error instanceof Error ? error.message : "附件删除失败";
+  } finally {
+    attachmentBusyId.value = null;
+  }
 }
 function toggleGroup(id: string) {
   expanded.value[id] = expanded.value[id] === false;
@@ -564,6 +611,8 @@ onUnmounted(() => {
   starfield?.destroy();
   resizeObserver?.disconnect();
   window.removeEventListener("popstate", onPopState);
+  attachmentObjectUrls.forEach((url) => URL.revokeObjectURL(url));
+  attachmentObjectUrls.clear();
   window.removeEventListener("resize", onResize);
   window.removeEventListener("keydown", onKeydown);
   window.removeEventListener("pointerdown", onPointerDown);
@@ -810,7 +859,11 @@ onUnmounted(() => {
             <span class="section-label">09 / 事迹与附件</span>
             <div v-if="detailAchievements.length || detailAttachments.length" class="profile-content-list">
               <article v-for="item in detailAchievements" :key="item.id" class="content-item"><strong>{{ item.kind === 'honor' ? '荣誉' : '事迹' }} · {{ item.title }}</strong><p>{{ item.content }}</p></article>
-              <a v-for="item in detailAttachments" :key="item.id" class="content-item attachment-item" :href="item.url ?? `/api/attachments/${item.id}`" target="_blank" rel="noreferrer">{{ item.category === 'resume' ? '简历' : item.category === 'photo' ? '照片' : item.category === 'avatar' ? '头像' : '附件' }} · {{ item.originalName }} <span>· {{ item.visibility === 'private' ? '仅自己可见' : '成员可见' }}</span></a>
+              <div v-for="item in detailAttachments" :key="item.id" class="content-item attachment-item">
+                <button class="attachment-open" type="button" :disabled="attachmentBusyId === item.id" @click="openAttachment(item)">{{ attachmentBusyId === item.id ? '处理中…' : '打开' }}</button>
+                <strong>{{ item.category === 'resume' ? '简历' : item.category === 'photo' ? '照片' : item.category === 'avatar' ? '头像' : '附件' }} · {{ item.originalName }}</strong> <span>· {{ item.visibility === 'private' ? '仅自己可见' : '成员可见' }}</span>
+                <button v-if="isOwnDetail && sessionToken" class="attachment-remove" type="button" :disabled="attachmentBusyId === item.id" @click="removeAttachment(item)">删除</button>
+              </div>
             </div>
             <div v-else class="empty-detail"><span>✦</span><p>星尘还没有留下记录，等一段故事抵达这里。</p></div>
             <form v-if="isOwnDetail && sessionToken" class="content-editor" @submit.prevent="addAchievement">
@@ -818,6 +871,7 @@ onUnmounted(() => {
               <textarea v-model.trim="achievementForm.content" maxlength="20000" rows="3" placeholder="写下这段经历" required></textarea>
               <div class="form-actions"><select v-model="uploadCategory" class="upload-category"><option value="avatar">头像</option><option value="resume">简历</option><option value="photo">照片</option></select><label class="upload-button">{{ uploadSaving ? '上传中…' : '上传文件' }}<input type="file" :accept="uploadCategory === 'resume' ? 'application/pdf' : 'image/jpeg,image/png,image/webp'" :disabled="uploadSaving" @change="uploadAttachment" /></label><button class="primary-command" type="submit" :disabled="achievementSaving">{{ achievementSaving ? '保存中…' : '添加记录' }}</button></div>
               <p v-if="uploadError" class="form-error" role="alert">{{ uploadError }}</p>
+              <p v-if="attachmentError" class="form-error" role="alert">{{ attachmentError }}</p>
             </form>
           </article>
           <InvitePanel v-if="isOwnDetail && sessionToken" :mentor-id="detail.id" :mentor-name="detail.name" :session-token="sessionToken" />

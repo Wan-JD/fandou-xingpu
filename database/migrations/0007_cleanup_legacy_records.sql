@@ -28,4 +28,3 @@ WHERE id IN ('cohort-2019', 'cohort-2021', 'cohort-2023', 'cohort-2024')
 ALTER TABLE users DROP COLUMN is_local_demo;
 
 COMMIT;
-
