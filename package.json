@@ -9,9 +9,9 @@
   "scripts": {
     "dev:web": "pnpm --dir apps/web dev",
     "dev:api": "pnpm --dir apps/api dev",
-    "build": "pnpm --dir apps/web build && pnpm --dir apps/api build",
+    "build": "pnpm --dir packages/shared typecheck && pnpm --dir apps/web build && pnpm --dir apps/api build",
     "build:api": "pnpm --dir apps/api build",
-    "test:contracts": "node --experimental-strip-types --test tests/demo-contract.test.mjs tests/lineage.test.mjs"
+    "test:contracts": "node --experimental-strip-types --test tests/demo-contract.test.mjs tests/lineage.test.mjs tests/account.test.mjs tests/invite.test.mjs"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

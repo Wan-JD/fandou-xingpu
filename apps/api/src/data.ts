@@ -71,7 +71,47 @@ export function findCohort(id: string) {
 }
 
 export function getChildren(id: string) {
-  return (lineage.directStudentIdsByMentorId.get(id) ?? [])
-    .map((studentId) => peopleById.get(studentId))
-    .filter((person): person is Person => Boolean(person));
+  return demoPeople.filter((person) => person.mentorId === id);
+}
+
+export function addRegisteredPerson(input: { id: string; name: string; nickname: string | null; mentorId: string | null; relationScope?: "lineage" | "cohort_guest"; now?: number }) {
+  const existing = peopleById.get(input.id);
+  if (existing) return existing;
+  const now = input.now ?? Date.now();
+  const year = new Date(now).getUTCFullYear();
+  const generation = `${year}届`;
+  let cohort = cohortByGeneration.get(generation);
+  if (!cohort) {
+    cohort = { id: `cohort-${year}`, name: generation, year, memberCount: 0, description: `${year} 届成员。` };
+    demoCohorts.push(cohort);
+    cohortByGeneration.set(generation, cohort);
+  }
+  const person: Person = {
+    id: input.id,
+    name: input.name,
+    nickname: input.nickname,
+    avatarUrl: null,
+    role: "星谱成员",
+    generation,
+    joinedAt: new Date(now).toISOString().slice(0, 10),
+    status: "active",
+    destination: null,
+    tags: [],
+    relationScope: input.relationScope ?? (input.mentorId ? "lineage" : "cohort_guest"),
+    isFeatured: false,
+    mentorId: input.mentorId,
+    bio: "刚刚加入星谱，个人简介等待补充。",
+  };
+  demoPeople.push(person);
+  peopleById.set(person.id, person);
+  cohort.memberCount += 1;
+
+  const mentorNode = input.mentorId ? demoTree.nodes.find((node) => node.id === input.mentorId) : undefined;
+  const node = toTreeNode(person);
+  node.depth = mentorNode ? (mentorNode.depth ?? 0) + 1 : 0;
+  demoTree.nodes.push(node);
+  if (input.mentorId) demoTree.edges.push({ id: `edge-${person.id}`, mentorId: input.mentorId, studentId: person.id });
+  if (mentorNode && !mentorNode.directStudentIds.includes(person.id)) mentorNode.directStudentIds.push(person.id);
+  demoTree.generatedAt = new Date(now).toISOString();
+  return person;
 }

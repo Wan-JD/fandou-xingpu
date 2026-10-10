@@ -4,6 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
+    "dev:d1": "wrangler dev -c wrangler.local.toml",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local -c wrangler.local.toml",
     "build": "tsc --noEmit",
     "deploy": "wrangler deploy"
   },

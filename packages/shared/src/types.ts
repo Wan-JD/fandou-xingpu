@@ -31,6 +31,11 @@ export interface PersonNode extends PersonSummary {
   mentorId: Id | null;
   depth: number | null;
   directStudentIds: Id[];
+  role: string;
+  generation: string;
+  joinedAt: string;
+  tags: string[];
+  bio: string;
 }
 
 export interface TreeEdge {
@@ -44,6 +49,7 @@ export interface TreeResponse {
   nodes: PersonNode[];
   edges: TreeEdge[];
   generatedAt: string;
+  demo: boolean;
 }
 
 export interface Achievement {
@@ -72,6 +78,10 @@ export interface AttachmentSummary {
 }
 
 export interface PersonDetail extends PersonSummary {
+  role: string;
+  generation: string;
+  joinedAt: string;
+  tags: string[];
   mentor: PersonSummary | null;
   students: PersonSummary[];
   bio: string;
@@ -121,7 +131,22 @@ export interface TreeQuery {
 export interface PersonUpdateInput {
   bio?: string;
   nickname?: string | null;
+  destination?: Destination | null;
   version: number;
+}
+
+export interface SessionUser {
+  id: Id;
+  email: string;
+  displayName: string;
+  personId: Id;
+  role: "member" | "admin";
+}
+
+export interface SessionData {
+  token: string;
+  expiresAt: string;
+  user: SessionUser;
 }
 
 export interface AchievementInput {

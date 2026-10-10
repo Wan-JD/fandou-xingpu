@@ -1,16 +1,20 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import InvitePanel from "./components/InvitePanel.vue";
+import InviteRegistration from "./components/InviteRegistration.vue";
 import StarAvatar from "./components/StarAvatar.vue";
 import { mountStarfield, sparkle, type Starfield } from "./lib/starfield";
 
 type Status = "active" | "archived";
 type Destination = "big_tech" | "postgraduate_985" | "postgraduate_211" | "startup" | "further_study" | "other";
 type Cohort = { id: string; label: string; year: number | null; sortOrder: number };
-type Person = { id: string; name: string; nickname: string | null; avatarUrl: string | null; cohort: Cohort | null; relationScope: "lineage" | "cohort_guest"; isFeatured: boolean; status: Status; destination: Destination | null; mentorId: string | null; depth: number | null; directStudentIds: string[]; role: string; joinedAt: string; tags: string[]; bio: string; mentor?: Person | null; students?: Person[]; achievements?: unknown[]; attachments?: unknown[]; featuredNote?: string | null };
+type Person = { id: string; name: string; nickname: string | null; avatarUrl: string | null; cohort: Cohort | null; relationScope: "lineage" | "cohort_guest"; isFeatured: boolean; status: Status; destination: Destination | null; mentorId: string | null; depth: number | null; directStudentIds: string[]; role: string; joinedAt: string; tags: string[]; bio: string; version?: number; mentor?: Person | null; students?: Person[]; achievements?: unknown[]; attachments?: unknown[]; featuredNote?: string | null };
 type Edge = { id: string; mentorId: string; studentId: string };
 type Tree = { rootPersonId: string | null; nodes: Person[]; edges: Edge[]; generatedAt: string; demo: boolean };
 type LinkSegment = { id: string; mentorId: string; studentId: string; path: string; x1: number; y1: number; x2: number; y2: number; crossCohort: boolean };
 type Tone = "gold" | "aqua" | "fog";
+type SessionUser = { id: string; email: string; displayName: string; personId: string; role: "member" | "admin" };
+type AuthMode = "login" | "register";
 
 const fallbackPeople: Person[] = [
   { id: "demo-person-001", name: "林砚", nickname: "砚叔", avatarUrl: null, cohort: { id: "cohort-2019", label: "2019 届", year: 2019, sortOrder: 0 }, relationScope: "lineage", isFeatured: true, status: "archived", destination: "startup", mentorId: null, depth: 0, directStudentIds: ["demo-person-002", "demo-person-003"], role: "发起人 / 产品顾问", joinedAt: "2019-06-18", tags: ["产品", "社区"], bio: "从一张白纸开始，记录每一次认真连接。" },
@@ -43,6 +47,19 @@ const nodeRefs = new Map<string, HTMLElement>();
 const links = ref<LinkSegment[]>([]);
 const canvasSize = ref({ width: 0, height: 0 });
 const popupPosition = ref({ left: 0, top: 0, arrow: 0 });
+const sessionToken = ref(localStorage.getItem("fandou-demo-session"));
+const sessionUser = ref<SessionUser | null>(null);
+const sessionLoading = ref(Boolean(sessionToken.value));
+const authOpen = ref(false);
+const authMode = ref<AuthMode>("login");
+const authLoading = ref(false);
+const authError = ref<string | null>(null);
+const authForm = ref({ email: "demo@fandou.local", password: "demo1234" });
+const profileEditing = ref(false);
+const profileSaving = ref(false);
+const profileError = ref<string | null>(null);
+const profileSaved = ref(false);
+const profileForm = ref<{ nickname: string; bio: string; destination: Destination | "" }>({ nickname: "", bio: "", destination: "" });
 let starfield: Starfield | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let centeredOnce = false;
@@ -161,8 +178,11 @@ const detailRouteId = computed(() => {
   try { return decodeURIComponent(match[1]); } catch { return match[1]; }
 });
 const isDetailRoute = computed(() => Boolean(detailRouteId.value));
+const isRegisterRoute = computed(() => pathname.value === "/register");
+const inviteToken = computed(() => new URLSearchParams(window.location.search).get("invite") ?? "");
 const currentDetail = computed(() => detailRouteId.value ? people.value.find((person) => person.id === detailRouteId.value) ?? null : null);
 const detail = computed(() => detailPerson.value ?? currentDetail.value);
+const isOwnDetail = computed(() => Boolean(detail.value && sessionUser.value?.personId === detail.value.id));
 const detailMentor = computed(() => {
   const person = detail.value;
   if (!person) return null;
@@ -195,7 +215,8 @@ function normaliseNode(node: Record<string, unknown>, index: number): Person {
   const cohort = rawCohort || fallbackCohort ? { ...(fallbackCohort ?? {}), ...(rawCohort ?? {}), id: year ? `cohort-${year}` : String(rawCohort?.id ?? fallbackCohort?.id ?? "uncategorized"), label: year ? `${year} 届` : "未分届次", year, sortOrder: Number(rawCohort?.sortOrder ?? fallbackCohort?.sortOrder ?? 99) } as Cohort : null;
   const directStudentIds = Array.isArray(node.directStudentIds) ? node.directStudentIds.map(String) : source.directStudentIds;
   const destination = isDestination(node.destination) ? node.destination : null;
-  return { ...source, ...node, id: String(node.id ?? source.id), name: String(node.name ?? source.name), cohort, destination, mentorId: node.mentorId == null ? source.mentorId : String(node.mentorId), directStudentIds, nickname: node.nickname == null ? source.nickname : String(node.nickname), avatarUrl: node.avatarUrl == null ? source.avatarUrl : String(node.avatarUrl), role: String(node.role ?? source.role), joinedAt: String(node.joinedAt ?? source.joinedAt), tags: Array.isArray(node.tags) ? node.tags.map(String) : source.tags, bio: String(node.bio ?? source.bio) } as Person;
+  const nickname = Object.prototype.hasOwnProperty.call(node, "nickname") ? (node.nickname == null ? null : String(node.nickname)) : source.nickname;
+  return { ...source, ...node, id: String(node.id ?? source.id), name: String(node.name ?? source.name), cohort, destination, version: Number(node.version ?? source.version ?? 1), mentorId: node.mentorId == null ? source.mentorId : String(node.mentorId), directStudentIds, nickname, avatarUrl: node.avatarUrl == null ? source.avatarUrl : String(node.avatarUrl), role: String(node.role ?? source.role), joinedAt: String(node.joinedAt ?? source.joinedAt), tags: Array.isArray(node.tags) ? node.tags.map(String) : source.tags, bio: String(node.bio ?? source.bio) } as Person;
 }
 async function loadTree() {
   loading.value = true;
@@ -224,6 +245,125 @@ async function loadTree() {
     }
   }
 }
+async function apiErrorMessage(response: Response, fallback: string) {
+  const payload = await response.json().catch(() => null) as { error?: { message?: string } } | null;
+  return payload?.error?.message ?? fallback;
+}
+function clearSession() {
+  sessionToken.value = null;
+  sessionUser.value = null;
+  localStorage.removeItem("fandou-demo-session");
+  profileEditing.value = false;
+}
+async function loadSession() {
+  const token = sessionToken.value;
+  if (!token) {
+    sessionLoading.value = false;
+    return;
+  }
+  sessionLoading.value = true;
+  try {
+    const response = await fetch("/api/session", { headers: { Authorization: `Bearer ${token}` } });
+    if (!response.ok) throw new Error("session unavailable");
+    const payload = await response.json() as { data?: { user?: SessionUser } };
+    if (!payload.data?.user) throw new Error("invalid session");
+    sessionUser.value = payload.data.user;
+  } catch {
+    clearSession();
+  } finally {
+    sessionLoading.value = false;
+  }
+}
+function setAuthMode(mode: AuthMode) {
+  authMode.value = mode;
+  authError.value = null;
+  if (mode === "login") authForm.value = { email: "demo@fandou.local", password: "demo1234" };
+}
+function openAuth(mode: AuthMode = "login") {
+  setAuthMode(mode);
+  authOpen.value = true;
+}
+function closeAuth() {
+  if (authLoading.value) return;
+  authOpen.value = false;
+  authError.value = null;
+}
+async function submitAuth() {
+  if (authMode.value !== "login") return;
+  authLoading.value = true;
+  authError.value = null;
+  try {
+    const response = await fetch("/api/session/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(authForm.value) });
+    if (!response.ok) throw new Error(await apiErrorMessage(response, "登录失败"));
+    const payload = await response.json() as { data?: { token?: string; user?: SessionUser } };
+    if (!payload.data?.token || !payload.data.user) throw new Error("会话数据不完整");
+    sessionToken.value = payload.data.token;
+    sessionUser.value = payload.data.user;
+    localStorage.setItem("fandou-demo-session", payload.data.token);
+    authOpen.value = false;
+    navigate(`/person/${encodeURIComponent(payload.data.user.personId)}`);
+  } catch (error) {
+    authError.value = error instanceof Error ? error.message : "暂时无法连接账号服务";
+  } finally {
+    authLoading.value = false;
+  }
+}
+async function logout() {
+  const token = sessionToken.value;
+  clearSession();
+  if (token) await fetch("/api/session", { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }).catch(() => undefined);
+}
+function openMyProfile() {
+  if (!sessionUser.value) {
+    openAuth();
+    return;
+  }
+  navigate(`/person/${encodeURIComponent(sessionUser.value.personId)}`);
+}
+function startProfileEdit() {
+  if (!detail.value || !isOwnDetail.value) return;
+  profileForm.value = { nickname: detail.value.nickname ?? "", bio: detail.value.bio, destination: detail.value.destination ?? "" };
+  profileError.value = null;
+  profileSaved.value = false;
+  profileEditing.value = true;
+}
+function cancelProfileEdit() {
+  if (profileSaving.value) return;
+  profileEditing.value = false;
+  profileError.value = null;
+}
+async function saveProfile() {
+  const token = sessionToken.value;
+  const person = detail.value;
+  if (!token || !person || !isOwnDetail.value) return;
+  profileSaving.value = true;
+  profileError.value = null;
+  profileSaved.value = false;
+  try {
+    const response = await fetch("/api/me/profile", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ nickname: profileForm.value.nickname.trim() || null, bio: profileForm.value.bio.trim(), destination: profileForm.value.destination || null, version: person.version ?? 1 }),
+    });
+    if (response.status === 401) {
+      clearSession();
+      openAuth();
+      throw new Error("会话已失效，请重新登录");
+    }
+    if (!response.ok) throw new Error(await apiErrorMessage(response, "资料保存失败"));
+    const payload = await response.json() as { data?: Record<string, unknown> };
+    if (!payload.data) throw new Error("资料响应为空");
+    const updated = normaliseNode({ ...person, ...payload.data, id: person.id }, 0);
+    detailPerson.value = updated;
+    tree.value.nodes = tree.value.nodes.map((node) => node.id === updated.id ? { ...node, nickname: updated.nickname, bio: updated.bio, destination: updated.destination, version: updated.version } : node);
+    profileEditing.value = false;
+    profileSaved.value = true;
+  } catch (error) {
+    profileError.value = error instanceof Error ? error.message : "资料保存失败";
+  } finally {
+    profileSaving.value = false;
+  }
+}
 function toggleGroup(id: string) {
   expanded.value[id] = expanded.value[id] === false;
   if (selectedPerson.value?.cohort?.id === id) selectedPerson.value = null;
@@ -237,6 +377,8 @@ function navigate(path: string) {
   detailPerson.value = null;
   detailError.value = null;
   hoveredId.value = null;
+  profileEditing.value = false;
+  profileSaved.value = false;
   window.scrollTo({ top: 0, behavior: reducedMotion ? "auto" : "smooth" });
   if (path === "/") {
     centeredOnce = false;
@@ -257,6 +399,8 @@ function onPopState() {
   selectedPerson.value = null;
   detailPerson.value = null;
   detailError.value = null;
+  profileEditing.value = false;
+  profileSaved.value = false;
   if (detailRouteId.value) void openDetailById(detailRouteId.value);
   else nextTick(() => { observeCanvas(); measureGraph(); });
 }
@@ -341,7 +485,12 @@ function observeCanvas() {
 function onStarSettled(event: AnimationEvent) { if (event.animationName === "star-rise") onResize(); }
 function onTreeScroll() { if (selectedPerson.value) measurePopup(); }
 function onResize() { measureGraph(); if (selectedPerson.value) measurePopup(); }
-function onKeydown(event: KeyboardEvent) { if (event.key === "Escape") closePreview(); }
+function onKeydown(event: KeyboardEvent) {
+  if (event.key !== "Escape") return;
+  if (authOpen.value) closeAuth();
+  else if (profileEditing.value) cancelProfileEdit();
+  else closePreview();
+}
 function onPointerDown(event: PointerEvent) {
   const target = event.target as Element | null;
   if (selectedPerson.value && target && !target.closest(".quick-popover, .star-node")) closePreview();
@@ -352,6 +501,7 @@ onMounted(() => {
   if (skyRef.value) starfield = mountStarfield(skyRef.value);
   resizeObserver = new ResizeObserver(() => onResize());
   void loadTree();
+  void loadSession();
   window.addEventListener("popstate", onPopState);
   window.addEventListener("resize", onResize);
   window.addEventListener("keydown", onKeydown);
@@ -381,16 +531,24 @@ onUnmounted(() => {
         <span class="brand-sigil" aria-hidden="true">
           <svg viewBox="0 0 24 24"><path d="M12 1.5c.5 5.6 4.9 10 10.5 10.5-5.6.5-10 4.9-10.5 10.5-.5-5.6-4.9-10-10.5-10.5C7.1 11.5 11.5 7.1 12 1.5Z" /></svg>
         </span>
-        <span class="brand-name">翻斗星谱<small>FANDOU LINEAGE ARCHIVE</small></span>
+        <span class="brand-name">翻斗星谱<small>FANDOU LINEAGE</small></span>
       </a>
       <div class="header-meta">
         <span class="status-dot" :class="{ offline: apiFailed }"></span>
         <span>{{ apiFailed ? "本地演示资料" : "星谱已连接" }}</span>
         <span class="read-only">只读档案</span>
+        <button class="account-entry" type="button" :disabled="sessionLoading" @click="openMyProfile">
+          <span class="account-orb" aria-hidden="true"></span>
+          {{ sessionLoading ? "读取账号" : (sessionUser?.displayName ?? "登录 / 加入") }}
+        </button>
+        <button v-if="sessionUser" class="account-logout" type="button" aria-label="退出登录" @click="logout">退出</button>
       </div>
     </header>
 
-    <main v-if="!isDetailRoute" class="home-page">
+    <main v-if="isRegisterRoute" class="detail-page" aria-live="polite">
+      <InviteRegistration :token="inviteToken" />
+    </main>
+    <main v-else-if="!isDetailRoute" class="home-page">
       <section class="hero">
         <p class="eyebrow">THE LINEAGE CONSTELLATION</p>
         <h1>让每颗星，<em>找到自己的轨道。</em></h1>
@@ -415,6 +573,9 @@ onUnmounted(() => {
           <span class="legend-item destination-key destination-big_tech"><i></i>大厂</span>
           <span class="legend-item destination-key destination-postgraduate_985"><i></i>985研</span>
           <span class="legend-item destination-key destination-postgraduate_211"><i></i>211研</span>
+          <span class="legend-item destination-key destination-startup"><i></i>创业</span>
+          <span class="legend-item destination-key destination-further_study"><i></i>继续深造</span>
+          <span class="legend-item destination-key destination-other"><i></i>其他</span>
           <span class="legend-item"><i class="legend-line"></i>传承轨迹</span>
         </div>
       </section>
@@ -489,6 +650,7 @@ onUnmounted(() => {
             v-if="selectedPerson"
             ref="popoverRef"
             class="quick-popover"
+            :class="destinationClass(selectedPerson)"
             :style="{ left: `${popupPosition.left}px`, top: `${popupPosition.top}px`, '--arrow': `${popupPosition.arrow}px` }"
             role="dialog"
             :aria-label="`${selectedPerson.name}简介`"
@@ -514,18 +676,46 @@ onUnmounted(() => {
     <main v-else class="detail-page" aria-live="polite">
       <button class="back-link" type="button" @click="navigate('/')">← 返回星谱</button>
       <div v-if="detail" class="detail-layout">
-        <section class="detail-intro">
-          <p class="eyebrow">PERSONAL ARCHIVE <span>{{ formatCohort(detail.cohort) }}</span></p>
+        <section class="detail-intro" :class="destinationClass(detail)">
+          <p class="eyebrow">PERSONAL PROFILE <span>{{ formatCohort(detail.cohort) }}</span></p>
           <div class="detail-avatar">
             <StarAvatar :name="detail.name" :avatar-url="detail.avatarUrl" :tone="toneOf(detail)" size="xl" />
           </div>
           <h1>{{ detail.name }}</h1>
+          <p v-if="detail.nickname" class="detail-nickname">{{ detail.nickname }}</p>
           <p class="detail-role">{{ detail.role }}</p>
           <span v-if="detail.destination" class="destination-badge detail-destination" :class="destinationClass(detail)">去向 · {{ destinationLabel(detail) }}</span>
           <div class="tag-row"><span v-for="tag in detail.tags" :key="tag" class="tag">{{ tag }}</span></div>
           <span class="record-note" :class="{ graduated: detail.status === 'archived' }"><i></i>{{ relationLabel(detail) }} · 演示档案</span>
+          <button v-if="isOwnDetail" class="profile-edit-trigger" type="button" @click="startProfileEdit">编辑我的资料</button>
+          <p v-if="isOwnDetail && profileSaved" class="profile-success" role="status">资料已保存</p>
         </section>
         <section class="detail-sections">
+          <article v-if="isOwnDetail && profileEditing" class="detail-section profile-editor">
+            <span class="section-label">编辑我的资料</span>
+            <form @submit.prevent="saveProfile">
+              <label class="form-field">
+                <span>昵称</span>
+                <input v-model="profileForm.nickname" type="text" maxlength="100" autocomplete="nickname" placeholder="可留空" />
+              </label>
+              <label class="form-field">
+                <span>简介</span>
+                <textarea v-model="profileForm.bio" maxlength="10000" rows="5" required></textarea>
+              </label>
+              <label class="form-field">
+                <span>去向</span>
+                <select v-model="profileForm.destination">
+                  <option value="">暂未填写</option>
+                  <option v-for="(label, value) in destinationLabels" :key="value" :value="value">{{ label }}</option>
+                </select>
+              </label>
+              <p v-if="profileError" class="form-error" role="alert">{{ profileError }}</p>
+              <div class="form-actions">
+                <button class="secondary-command" type="button" :disabled="profileSaving" @click="cancelProfileEdit">取消</button>
+                <button class="primary-command" type="submit" :disabled="profileSaving">{{ profileSaving ? "保存中" : "保存资料" }}</button>
+              </div>
+            </form>
+          </article>
           <article class="detail-section">
             <span class="section-label">01 / 简介</span>
             <p class="detail-copy">{{ detail.bio }}</p>
@@ -552,6 +742,7 @@ onUnmounted(() => {
             <span class="section-label">04 / 事迹与附件</span>
             <div class="empty-detail"><span>＋</span><p>尚未添加事迹、荣誉或附件。</p></div>
           </article>
+          <InvitePanel v-if="isOwnDetail && sessionToken" :mentor-id="detail.id" :mentor-name="detail.name" :session-token="sessionToken" />
         </section>
       </div>
       <div v-else class="state-message">
@@ -561,5 +752,34 @@ onUnmounted(() => {
       </div>
       <p v-if="detail && detailError" class="state-message" role="status">{{ detailError }}，当前显示本地演示资料。</p>
     </main>
+
+    <div v-if="authOpen" class="modal-backdrop" @click.self="closeAuth">
+      <section class="auth-dialog" role="dialog" aria-modal="true" :aria-labelledby="`auth-${authMode}-title`">
+        <button class="popover-close" type="button" aria-label="关闭账号窗口" @click="closeAuth">×</button>
+        <span class="section-label">MEMBER ACCESS</span>
+        <h2 :id="`auth-${authMode}-title`">{{ authMode === "login" ? "登录星谱" : "注册账号" }}</h2>
+        <div class="auth-tabs" role="tablist" aria-label="账号方式">
+          <button type="button" role="tab" :aria-selected="authMode === 'login'" :class="{ active: authMode === 'login' }" @click="setAuthMode('login')">登录</button>
+          <button type="button" role="tab" :aria-selected="authMode === 'register'" :class="{ active: authMode === 'register' }" @click="setAuthMode('register')">注册</button>
+        </div>
+        <form v-if="authMode === 'login'" class="auth-form" @submit.prevent="submitAuth">
+          <label class="form-field">
+            <span>邮箱</span>
+            <input v-model="authForm.email" type="email" maxlength="254" autocomplete="email" required />
+          </label>
+          <label class="form-field">
+            <span>密码</span>
+            <input v-model="authForm.password" type="password" minlength="6" maxlength="100" :autocomplete="authMode === 'login' ? 'current-password' : 'new-password'" required />
+          </label>
+          <p v-if="authError" class="form-error" role="alert">{{ authError }}</p>
+          <button class="primary-command auth-submit" type="submit" :disabled="authLoading">{{ authLoading ? "登录中" : "登录" }}</button>
+        </form>
+        <div v-else class="invite-guidance">
+          <span class="account-orb" aria-hidden="true"></span>
+          <p>新成员需要通过师傅发出的专属邀请链接加入。邀请码只能使用一次，注册后会自动建立师徒关系。</p>
+          <button class="secondary-command auth-submit" type="button" @click="setAuthMode('login')">已有账号，返回登录</button>
+        </div>
+      </section>
+    </div>
   </div>
 </template>

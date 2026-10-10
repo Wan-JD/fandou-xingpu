@@ -9,7 +9,9 @@ export {
   treeQuerySchema,
   personSearchQuerySchema,
   personUpdateSchema,
+  sessionLoginSchema,
+  sessionRegisterSchema,
   achievementInputSchema,
   idParamsSchema,
 } from "./schemas";
-export type { TreeQueryInput, PersonSearchQueryInput } from "./schemas";
+export type { TreeQueryInput, PersonSearchQueryInput, SessionLoginInput, SessionRegisterInput } from "./schemas";

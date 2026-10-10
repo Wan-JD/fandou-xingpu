@@ -2,14 +2,17 @@ import { cors } from "hono/cors";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { personSearchQuerySchema } from "../../../packages/shared/src/schemas.ts";
+import { accountApi, getProfileMetadata } from "./account-api.ts";
 import { demoCohorts, demoPeople, demoTree, findCohort, findPerson, getChildren, toSummary } from "./data.ts";
+import { inviteApi } from "./invites.ts";
+import { persistence } from "./persistence.ts";
 import type { Env } from "./types";
 
 const app = new Hono<{ Bindings: Env }>();
 
 app.use("/api/*", async (c, next) => cors({
-  origin: c.env.ALLOWED_ORIGIN ?? "*",
-  allowMethods: ["GET", "OPTIONS"],
+  origin: c.env?.ALLOWED_ORIGIN ?? "*",
+  allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
   allowHeaders: ["Content-Type", "Authorization"],
 })(c, next));
 
@@ -24,6 +27,7 @@ const toPersonDetail = (person: ReturnType<typeof findPerson>) => {
   const mentor = person.mentorId ? findPerson(person.mentorId) : undefined;
   const cohort = demoCohorts.find((candidate) => candidate.name === person.generation);
   const now = new Date().toISOString();
+  const metadata = getProfileMetadata(person.id);
   return {
     ...toSummary(person),
     role: person.role,
@@ -37,9 +41,9 @@ const toPersonDetail = (person: ReturnType<typeof findPerson>) => {
     resume: null,
     achievements: [],
     attachments: [],
-    version: 1,
+    version: metadata.version,
     createdAt: `${person.joinedAt}T00:00:00.000Z`,
-    updatedAt: now,
+    updatedAt: metadata.updatedAt ?? now,
     cohort: cohort ? { id: cohort.id, label: cohort.name, year: cohort.year, sortOrder: cohort.year - 2019 } : null,
   };
 };
@@ -51,14 +55,27 @@ app.get("/api/health", (c) => c.json({
   timestamp: new Date().toISOString(),
 }));
 
-app.get("/api/tree", (c) => c.json({ data: demoTree, meta: { demo: true, total: demoTree.nodes.length } }));
+app.route("/api/invites", inviteApi);
+app.route("/api", accountApi);
+
+app.get("/api/tree", async (c) => {
+  if (c.env?.DB) {
+    const tree = await persistence(c.env.DB).tree();
+    return c.json({ data: tree, meta: { demo: false, total: tree.nodes.length } });
+  }
+  return c.json({ data: demoTree, meta: { demo: true, total: demoTree.nodes.length } });
+});
 
 // Keep this route above /api/people/:id so "search" is not interpreted as an id.
-app.get("/api/people/search", (c) => {
+app.get("/api/people/search", async (c) => {
   const parsed = personSearchQuerySchema.safeParse({ q: c.req.query("q"), limit: c.req.query("limit") });
   if (!parsed.success) {
     const fieldErrors = parsed.error.flatten().fieldErrors as Record<string, string[]>;
     return errorResponse("Invalid search parameters", "VALIDATION_ERROR", 400, fieldErrors);
+  }
+  if (c.env?.DB) {
+    const result = await persistence(c.env.DB).searchPeople(parsed.data.q, parsed.data.limit);
+    return c.json({ data: result, meta: { demo: false, total: result.total, limit: parsed.data.limit, query: parsed.data.q } });
   }
   const query = parsed.data.q.toLocaleLowerCase();
   const destinationLabels = { big_tech: "大厂", postgraduate_985: "985研", postgraduate_211: "211研", startup: "创业", further_study: "继续深造", other: "其他" } as const;
@@ -68,15 +85,31 @@ app.get("/api/people/search", (c) => {
   return c.json({ data: { items, total: matches.length }, meta: { demo: true, total: matches.length, limit: parsed.data.limit, query: parsed.data.q } });
 });
 
-app.get("/api/people/:id", (c) => {
+app.get("/api/people/:id", async (c) => {
+  if (c.env?.DB) {
+    const person = await persistence(c.env.DB).personDetail(c.req.param("id"));
+    if (!person) return errorResponse("Person not found", "PERSON_NOT_FOUND", 404);
+    return c.json({ data: person, meta: { demo: false } });
+  }
   const person = findPerson(c.req.param("id"));
   if (!person) return errorResponse("Person not found", "PERSON_NOT_FOUND", 404);
   return c.json({ data: toPersonDetail(person), meta: { demo: true } });
 });
 
-app.get("/api/cohorts", (c) => c.json({ data: demoCohorts, meta: { demo: true, total: demoCohorts.length } }));
+app.get("/api/cohorts", async (c) => {
+  if (c.env?.DB) {
+    const cohorts = await persistence(c.env.DB).cohorts();
+    return c.json({ data: cohorts, meta: { demo: false, total: cohorts.length } });
+  }
+  return c.json({ data: demoCohorts, meta: { demo: true, total: demoCohorts.length } });
+});
 
-app.get("/api/cohorts/:id", (c) => {
+app.get("/api/cohorts/:id", async (c) => {
+  if (c.env?.DB) {
+    const cohort = await persistence(c.env.DB).cohortDetail(c.req.param("id"));
+    if (!cohort) return errorResponse("Cohort not found", "COHORT_NOT_FOUND", 404);
+    return c.json({ data: cohort, meta: { demo: false, total: cohort.memberCount } });
+  }
   const cohort = findCohort(c.req.param("id"));
   if (!cohort) return errorResponse("Cohort not found", "COHORT_NOT_FOUND", 404);
   const people = demoPeople.filter((person) => person.generation === cohort.name);

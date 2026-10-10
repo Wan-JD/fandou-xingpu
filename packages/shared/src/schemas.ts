@@ -21,7 +21,19 @@ export const personSearchQuerySchema = z.object({
 export const personUpdateSchema = z.object({
   bio: z.string().trim().max(10_000).optional(),
   nickname: z.string().trim().max(100).nullable().optional(),
+  destination: destinationSchema.nullable().optional(),
   version: z.number().int().min(1),
+}).strict();
+
+export const sessionLoginSchema = z.object({
+  email: z.string().trim().email().max(254),
+  password: z.string().min(6).max(100),
+}).strict();
+
+export const sessionRegisterSchema = z.object({
+  displayName: z.string().trim().min(2).max(50),
+  email: z.string().trim().email().max(254),
+  password: z.string().min(6).max(100),
 }).strict();
 
 export const achievementInputSchema = z.object({
@@ -44,4 +56,6 @@ export const idParamsSchema = z.object({ id: idSchema });
 export type TreeQueryInput = z.infer<typeof treeQuerySchema>;
 export type PersonSearchQueryInput = z.infer<typeof personSearchQuerySchema>;
 export type PersonUpdateInput = z.infer<typeof personUpdateSchema>;
+export type SessionLoginInput = z.infer<typeof sessionLoginSchema>;
+export type SessionRegisterInput = z.infer<typeof sessionRegisterSchema>;
 export type AchievementInput = z.infer<typeof achievementInputSchema>;

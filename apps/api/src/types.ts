@@ -1,6 +1,7 @@
 export interface Env {
   API_ENV?: string;
   ALLOWED_ORIGIN?: string;
+  DB?: D1Database;
 }
 
 export interface Person {

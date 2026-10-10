@@ -9,6 +9,7 @@ dist/
 !.env.example
 *.local
 coverage/
+.playwright-cli/
 .DS_Store
 Thumbs.db
 
