@@ -15,13 +15,3 @@ migrations_dir = "../../database/migrations"
 [[r2_buckets]]
 binding = "FILES"
 bucket_name = "fandou-xingpu-files"
-
-[[d1_databases]]
-binding = "DB"
-database_name = "fandou-xingpu-production"
-database_id = "c7c6b621-676e-435b-bfd9-97b2a0f8670e"
-migrations_dir = "../../database/migrations"
-
-[[r2_buckets]]
-binding = "FILES"
-bucket_name = "fandou-xingpu-files"
