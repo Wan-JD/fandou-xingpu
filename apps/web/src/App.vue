@@ -1,26 +1,22 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
-import InvitePanel from "./components/InvitePanel.vue";
 import InviteRegistration from "./components/InviteRegistration.vue";
 import ClaimRegistration from "./components/ClaimRegistration.vue";
 import AdminPanel from "./components/AdminPanel.vue";
 import StarAvatar from "./components/StarAvatar.vue";
+import ProfilePage from "./components/profile/ProfilePage.vue";
+import StudentStudio from "./components/students/StudentStudio.vue";
+import { apiErrorMessage } from "./lib/api";
+import {
+  destinationClass, destinationLabel, destinationLabels, formatCohort, groupRoleClass, groupRoleLabels, membershipLabel, membershipLabels,
+  normaliseNode, relationLabel, toneFor, type Cohort, type Person, type SessionUser, type Tone,
+} from "./lib/people";
 import { mountStarfield, sparkle, type Starfield } from "./lib/starfield";
+import { warpTo } from "./lib/warp";
 
-type Status = "active" | "archived";
-type MembershipType = "formal" | "probationary";
-type Destination = "big_tech" | "postgraduate_985" | "postgraduate_211" | "startup" | "further_study" | "other";
-type Cohort = { id: string; label: string; year: number | null; sortOrder: number };
-type Achievement = { id: string; kind: "achievement" | "honor"; title: string; content: string; occurredOn: string | null; version: number };
-type Attachment = { id: string; originalName: string; mimeType: string; size: number; category: string; visibility: string; url: string | null };
-type ProfileLink = { label: string; url: string };
-type UploadCategory = "avatar" | "resume" | "photo" | "certificate";
-type Person = { id: string; name: string; avatarUrl: string | null; cohort: Cohort | null; relationScope: "lineage" | "cohort_guest"; isFeatured: boolean; status: Status; memberType?: MembershipType | null; destination: Destination | null; mentorId: string | null; depth: number | null; directStudentIds: string[]; role: string; joinedAt: string; tags: string[]; bio: string; contactEmail?: string | null; education?: string | null; experience?: string | null; skills?: string[]; links?: ProfileLink[]; resume?: Attachment | null; version?: number; mentor?: Person | null; students?: Person[]; achievements?: Achievement[]; attachments?: Attachment[]; featuredNote?: string | null };
 type Edge = { id: string; mentorId: string; studentId: string };
 type Tree = { rootPersonId: string | null; nodes: Person[]; edges: Edge[]; generatedAt: string };
 type LinkSegment = { id: string; mentorId: string; studentId: string; path: string; x1: number; y1: number; x2: number; y2: number; crossCohort: boolean };
-type Tone = "gold" | "aqua" | "fog";
-type SessionUser = { id: string; email?: string | null; phone?: string | null; displayName: string; personId: string; role: "member" | "admin"; mustChangePassword?: boolean };
 type AuthMode = "login" | "register";
 
 const emptyTree: Tree = { rootPersonId: null, nodes: [], edges: [], generatedAt: new Date(0).toISOString() };
@@ -31,11 +27,9 @@ const loading = ref(true);
 const apiFailed = ref(false);
 const query = ref("");
 const selectedPerson = ref<Person | null>(null);
-const detailPerson = ref<Person | null>(null);
-const detailLoading = ref(false);
-const detailError = ref<string | null>(null);
 const hoveredId = ref<string | null>(null);
 const pathname = ref(window.location.pathname);
+const search = ref(window.location.search);
 const expanded = ref<Record<string, boolean>>({});
 const skyRef = ref<HTMLCanvasElement | null>(null);
 const stageRef = ref<HTMLElement | null>(null);
@@ -58,22 +52,9 @@ const passwordChangeOpen = ref(false);
 const passwordChangeSaving = ref(false);
 const passwordChangeError = ref("");
 const passwordChangeForm = ref({ currentPassword: "", newPassword: "", confirmPassword: "" });
-const profileEditing = ref(false);
-const profileSaving = ref(false);
-const profileError = ref<string | null>(null);
-const profileSaved = ref(false);
-const profileForm = ref<{ bio: string; destination: Destination | ""; memberType: MembershipType | ""; contactEmail: string; education: string; experience: string; skills: string; links: string }>({ bio: "", destination: "", memberType: "", contactEmail: "", education: "", experience: "", skills: "", links: "" });
-const achievementForm = ref({ kind: "achievement" as "achievement" | "honor", title: "", content: "" });
-const achievementSaving = ref(false);
-const uploadSaving = ref(false);
-const uploadError = ref("");
-const attachmentBusyId = ref<string | null>(null);
-const attachmentError = ref("");
-const attachmentObjectUrls = new Set<string>();
 let starfield: Starfield | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let centeredOnce = false;
-let detailRequestId = 0;
 
 const people = computed(() => tree.value.nodes);
 const rootPerson = computed(() => people.value.find((person) => person.id === tree.value.rootPersonId) ?? people.value[0] ?? null);
@@ -165,25 +146,14 @@ const layout = computed(() => {
 });
 
 const rows = computed(() => groups.value.map((group) => ({ ...group, members: group.members.slice().sort((a, b) => (layout.value.offsets.get(a.id) ?? 0) - (layout.value.offsets.get(b.id) ?? 0)) })));
-const formatCohort = (cohort: Cohort | null) => cohort?.year ? `${cohort.year} 级` : "未分级";
-const destinationLabels: Record<Destination, string> = {
-  big_tech: "大厂",
-  postgraduate_985: "985研",
-  postgraduate_211: "211研",
-  startup: "创业",
-  further_study: "继续深造",
-  other: "其他",
-};
-const isDestination = (value: unknown): value is Destination => typeof value === "string" && value in destinationLabels;
-const isMembershipType = (value: unknown): value is MembershipType => value === "formal" || value === "probationary";
-const membershipLabels: Record<MembershipType, string> = { formal: "正式组员", probationary: "预备组员" };
-const membershipLabel = (person: Person) => person.memberType ? membershipLabels[person.memberType] : "";
-const destinationLabel = (person: Person) => person.destination ? destinationLabels[person.destination] : "去向待补充";
-const destinationClass = (person: Person) => person.destination ? `destination-${person.destination}` : "destination-unset";
 const matchingIds = computed(() => {
   const text = query.value.trim().toLocaleLowerCase();
   if (!text) return new Set(people.value.map((person) => person.id));
-  return new Set(people.value.filter((person) => [person.name, person.role, formatCohort(person.cohort), person.status === "archived" ? "毕业" : "在读", person.memberType ? membershipLabels[person.memberType] : "", person.destination ? destinationLabels[person.destination] : "", ...person.tags].join(" ").toLocaleLowerCase().includes(text)).map((person) => person.id));
+  return new Set(people.value.filter((person) => [
+    person.name, person.role, formatCohort(person.cohort), relationLabel(person),
+    person.memberType ? membershipLabels[person.memberType] : "", person.destination ? destinationLabels[person.destination] : "",
+    person.groupRole ? groupRoleLabels[person.groupRole] : "", ...person.tags,
+  ].join(" ").toLocaleLowerCase().includes(text)).map((person) => person.id));
 });
 const detailRouteId = computed(() => {
   const match = pathname.value.match(/^\/person\/([^/]+)/);
@@ -194,78 +164,21 @@ const isDetailRoute = computed(() => Boolean(detailRouteId.value));
 const isRegisterRoute = computed(() => pathname.value === "/register");
 const isClaimRoute = computed(() => pathname.value === "/claim");
 const isAdminRoute = computed(() => pathname.value === "/admin");
-const inviteToken = computed(() => new URLSearchParams(window.location.search).get("invite") ?? "");
-const claimToken = computed(() => new URLSearchParams(window.location.search).get("token") ?? "");
-const currentDetail = computed(() => detailRouteId.value ? people.value.find((person) => person.id === detailRouteId.value) ?? null : null);
-const detail = computed(() => detailPerson.value ?? currentDetail.value);
-const isOwnDetail = computed(() => Boolean(detail.value && sessionUser.value?.personId === detail.value.id));
-const detailMentor = computed(() => {
-  const person = detail.value;
-  if (!person) return null;
-  return person.mentor ?? (person.mentorId ? people.value.find((candidate) => candidate.id === person.mentorId) ?? null : null);
-});
-const detailStudents = computed(() => {
-  const person = detail.value;
-  if (!person) return [];
-  if (person.students?.length) return person.students;
-  const ids = new Set(person.directStudentIds ?? []);
-  tree.value.edges.forEach((edge) => { if (edge.mentorId === person.id) ids.add(edge.studentId); });
-  return [...ids].map((id) => people.value.find((candidate) => candidate.id === id)).filter((candidate): candidate is Person => Boolean(candidate));
-});
-const detailAchievements = computed(() => detail.value?.achievements ?? []);
-const detailAttachments = computed(() => detail.value?.attachments ?? []);
-const profileFileAttachments = computed(() => detailAttachments.value.filter((item) => item.category !== "avatar"));
-const uploadCards: Array<{ category: UploadCategory; title: string; description: string; accept: string }> = [
-  { category: "resume", title: "简历", description: "上传一份 PDF 简历，方便成员了解你的经历。", accept: "application/pdf" },
-  { category: "photo", title: "照片", description: "记录旅途、活动或作品照片，支持 JPG、PNG、WebP。", accept: "image/jpeg,image/png,image/webp" },
-  { category: "certificate", title: "证书 / 证明", description: "上传证书或证明材料，支持图片和 PDF。", accept: "image/jpeg,image/png,image/webp,application/pdf" },
-];
-const attachmentsFor = (category: UploadCategory) => detailAttachments.value.filter((item) => item.category === category);
-const hasAvatar = computed(() => Boolean(detail.value?.avatarUrl));
-const showRecordsSection = computed(() => Boolean(detailAchievements.value.length || profileFileAttachments.value.length || (isOwnDetail.value && profileEditing.value)));
+const isStudentsRoute = computed(() => pathname.value === "/students");
+const isHomeRoute = computed(() => !isDetailRoute.value && !isRegisterRoute.value && !isClaimRoute.value && !isAdminRoute.value && !isStudentsRoute.value);
+const inviteToken = computed(() => new URLSearchParams(search.value).get("invite") ?? "");
+const claimToken = computed(() => new URLSearchParams(search.value).get("token") ?? "");
+const focusId = computed(() => new URLSearchParams(search.value).get("focus"));
+const myPersonId = computed(() => sessionUser.value?.personId ?? null);
 const visibleLinks = computed(() => links.value.filter((link) => !query.value || matchingIds.value.has(link.mentorId) || matchingIds.value.has(link.studentId)));
 const isVisible = (person: Person) => matchingIds.value.has(person.id);
-const relationLabel = (person: Person) => person.status === "archived" ? "毕业" : "在读";
-const toneOf = (person: Person): Tone => person.status === "archived" ? "fog" : person.isFeatured || person.id === rootPerson.value?.id ? "gold" : "aqua";
-
-const detailSectionNumber = (section: "bio" | "education" | "experience" | "skills" | "links" | "contact" | "relation" | "joined" | "attachments") => {
-  const person = detail.value;
-  const sections: string[] = ["bio"];
-  if (person?.education) sections.push("education");
-  if (person?.experience) sections.push("experience");
-  if (person?.skills?.length) sections.push("skills");
-  if (person?.links?.length) sections.push("links");
-  if (person?.contactEmail) sections.push("contact");
-  sections.push("relation", "joined");
-  if (showRecordsSection.value) sections.push("attachments");
-  const index = sections.indexOf(section);
-  return String(index >= 0 ? index + 1 : sections.length).padStart(2, "0");
-};
+const toneOf = (person: Person): Tone => toneFor(person, rootPerson.value?.id);
+const legendDestinations = Object.entries(destinationLabels) as Array<[keyof typeof destinationLabels, string]>;
 const isLinkActive = (link: LinkSegment) => hoveredId.value !== null && (link.mentorId === hoveredId.value || link.studentId === hoveredId.value);
 
 function setNodeRef(id: string, element: Element | null) {
   if (element instanceof HTMLElement) nodeRefs.set(id, element);
   else nodeRefs.delete(id);
-}
-function normaliseNode(node: Record<string, unknown>): Person {
-  if (typeof node.id !== "string" || !node.id.trim() || typeof node.name !== "string" || !node.name.trim()) throw new Error("invalid person");
-  const source = {
-    id: node.id, name: node.name, avatarUrl: null,
-    cohort: null, relationScope: "cohort_guest" as const, isFeatured: false, status: "active" as const, memberType: null, destination: null,
-    mentorId: null, depth: null, directStudentIds: [], role: "星谱成员", joinedAt: "", tags: [], bio: "",
-  };
-  const rawCohort = node.cohort as Partial<Cohort> | null | undefined;
-  const fallbackCohort = source.cohort;
-  const rawYear = rawCohort?.year ?? String(rawCohort?.label ?? "").match(/\d{4}/)?.[0];
-  const year = rawYear ? Number(rawYear) : (fallbackCohort?.year ?? null);
-  const cohort = rawCohort || fallbackCohort ? { ...(fallbackCohort ?? {}), ...(rawCohort ?? {}), id: year ? `cohort-${year}` : String(rawCohort?.id ?? fallbackCohort?.id ?? "uncategorized"), label: year ? `${year} 级` : "未分级", year, sortOrder: Number(rawCohort?.sortOrder ?? fallbackCohort?.sortOrder ?? 99) } as Cohort : null;
-  const directStudentIds = Array.isArray(node.directStudentIds) ? node.directStudentIds.map(String) : source.directStudentIds;
-  const destination = isDestination(node.destination) ? node.destination : null;
-  const rawMemberType = node.memberType;
-  const memberType = isMembershipType(rawMemberType) ? rawMemberType : rawMemberType === "正式组员" ? "formal" : rawMemberType === "预备组员" ? "probationary" : null;
-  const skills = Array.isArray(node.skills) ? node.skills.filter((skill): skill is string => typeof skill === "string" && Boolean(skill.trim())) : [];
-  const profileLinks = Array.isArray(node.links) ? node.links.filter((link): link is ProfileLink => Boolean(link && typeof link === "object" && typeof (link as ProfileLink).label === "string" && typeof (link as ProfileLink).url === "string")) : [];
-  return { ...source, ...node, id: source.id, name: source.name, cohort, destination, memberType, version: Number(node.version ?? 1), mentorId: node.mentorId == null ? null : String(node.mentorId), directStudentIds, avatarUrl: node.avatarUrl == null ? null : String(node.avatarUrl), role: String(node.role ?? source.role), joinedAt: String(node.joinedAt ?? ""), tags: Array.isArray(node.tags) ? node.tags.map(String) : [], bio: String(node.bio ?? ""), contactEmail: node.contactEmail == null ? null : String(node.contactEmail), education: node.education == null ? null : String(node.education), experience: node.experience == null ? null : String(node.experience), skills, links: profileLinks } as Person;
 }
 async function loadTree() {
   loading.value = true;
@@ -288,21 +201,13 @@ async function loadTree() {
     await nextTick();
     observeCanvas();
     measureGraph();
-    if (detailRouteId.value) {
-      const routePerson = people.value.find((person) => person.id === detailRouteId.value);
-      if (routePerson && detailPerson.value?.id !== routePerson.id) void openDetail(routePerson);
-    }
+    if (isHomeRoute.value && focusId.value) focusStar(focusId.value);
   }
-}
-async function apiErrorMessage(response: Response, fallback: string) {
-  const payload = await response.json().catch(() => null) as { error?: { message?: string } } | null;
-  return payload?.error?.message ?? fallback;
 }
 function clearSession() {
   sessionToken.value = null;
   sessionUser.value = null;
   localStorage.removeItem("fandou-session");
-  profileEditing.value = false;
   passwordChangeOpen.value = false;
   passwordChangeForm.value = { currentPassword: "", newPassword: "", confirmPassword: "" };
 }
@@ -357,7 +262,8 @@ async function submitAuth() {
       passwordChangeForm.value.currentPassword = authForm.value.password;
       passwordChangeOpen.value = true;
     }
-    navigate(`/person/${encodeURIComponent(payload.data.user.personId)}`);
+    // Signing in from a profile or workspace keeps the visitor where they were.
+    if (isHomeRoute.value) navigate(`/person/${encodeURIComponent(payload.data.user.personId)}`);
   } catch (error) {
     authError.value = error instanceof Error ? error.message : "暂时无法连接账号服务";
   } finally {
@@ -394,209 +300,70 @@ function openMyProfile() {
 async function refreshAfterAdminChange() {
   await Promise.all([loadTree(), loadSession()]);
 }
-function startProfileEdit() {
-  if (!detail.value || !isOwnDetail.value) return;
-  profileForm.value = {
-    bio: detail.value.bio, destination: detail.value.destination ?? "", memberType: detail.value.memberType ?? "",
-    contactEmail: detail.value.contactEmail ?? "", education: detail.value.education ?? "", experience: detail.value.experience ?? "",
-    skills: (detail.value.skills ?? []).join(", "), links: (detail.value.links ?? []).map((link) => `${link.label} | ${link.url}`).join("\n"),
-  };
-  profileError.value = null;
-  profileSaved.value = false;
-  profileEditing.value = true;
-}
-function cancelProfileEdit() {
-  if (profileSaving.value) return;
-  profileEditing.value = false;
-  profileError.value = null;
-}
-async function saveProfile() {
-  const token = sessionToken.value;
-  const person = detail.value;
-  if (!token || !person || !isOwnDetail.value) return;
-  profileSaving.value = true;
-  profileError.value = null;
-  profileSaved.value = false;
-  try {
-    const response = await fetch("/api/me/profile", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({
-        bio: profileForm.value.bio.trim(), destination: profileForm.value.destination || null,
-        memberType: profileForm.value.memberType || null,
-        contactEmail: profileForm.value.contactEmail.trim() || null,
-        education: profileForm.value.education.trim() || null, experience: profileForm.value.experience.trim() || null,
-        skills: profileForm.value.skills.split(",").map((item) => item.trim()).filter(Boolean),
-        links: profileForm.value.links.split("\n").map((line) => line.split("|")).map(([label, url]) => ({ label: (label ?? "").trim(), url: (url ?? "").trim() })).filter((link) => link.label && link.url),
-        version: person.version ?? 1,
-      }),
-    });
-    if (response.status === 401) {
-      clearSession();
-      openAuth();
-      throw new Error("会话已失效，请重新登录");
-    }
-    if (!response.ok) throw new Error(await apiErrorMessage(response, "资料保存失败"));
-    const payload = await response.json() as { data?: Record<string, unknown> };
-    if (!payload.data) throw new Error("资料响应为空");
-    const updated = normaliseNode({ ...person, ...payload.data, id: person.id });
-    detailPerson.value = updated;
-    tree.value.nodes = tree.value.nodes.map((node) => node.id === updated.id ? { ...node, bio: updated.bio, destination: updated.destination, memberType: updated.memberType, version: updated.version, contactEmail: updated.contactEmail, education: updated.education, experience: updated.experience, skills: updated.skills, links: updated.links } : node);
-    profileEditing.value = false;
-    profileSaved.value = true;
-  } catch (error) {
-    profileError.value = error instanceof Error ? error.message : "资料保存失败";
-  } finally {
-    profileSaving.value = false;
-  }
-}
-async function addAchievement() {
-  if (!sessionToken.value || !isOwnDetail.value || !achievementForm.value.title.trim() || !achievementForm.value.content.trim()) return;
-  achievementSaving.value = true; uploadError.value = "";
-  try {
-    const response = await fetch("/api/me/achievements", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${sessionToken.value}` }, body: JSON.stringify(achievementForm.value) });
-    if (!response.ok) throw new Error(await apiErrorMessage(response, "事迹保存失败"));
-    const payload = await response.json() as { data?: Achievement };
-    if (payload.data && detailPerson.value) detailPerson.value = { ...detailPerson.value, achievements: [payload.data, ...(detailPerson.value.achievements ?? [])] };
-    achievementForm.value = { kind: "achievement", title: "", content: "" };
-  } catch (error) { uploadError.value = error instanceof Error ? error.message : "事迹保存失败"; }
-  finally { achievementSaving.value = false; }
-}
-async function uploadAttachment(event: Event, category: UploadCategory) {
-  const input = event.target as HTMLInputElement;
-  const file = input.files?.[0];
-  if (!file || !sessionToken.value || !isOwnDetail.value) return;
-  uploadSaving.value = true; uploadError.value = ""; attachmentError.value = "";
-  try {
-    const form = new FormData(); form.append("file", file); form.append("category", category); form.append("visibility", "members");
-    const response = await fetch("/api/me/attachments", { method: "POST", headers: { Authorization: `Bearer ${sessionToken.value}` }, body: form });
-    if (!response.ok) throw new Error(await apiErrorMessage(response, "附件上传失败"));
-    const payload = await response.json() as { data?: Attachment };
-    if (payload.data && detailPerson.value) {
-      const nextAttachments = category === "avatar"
-        ? (detailPerson.value.attachments ?? [])
-        : category === "resume"
-          ? [payload.data, ...(detailPerson.value.attachments ?? []).filter((item) => item.category !== "resume")]
-          : [payload.data, ...(detailPerson.value.attachments ?? [])];
-      detailPerson.value = { ...detailPerson.value, avatarUrl: category === "avatar" ? `/api/attachments/${payload.data.id}` : detailPerson.value.avatarUrl, resume: category === "resume" ? payload.data : detailPerson.value.resume, attachments: nextAttachments };
-      if (category === "avatar") tree.value.nodes = tree.value.nodes.map((node) => node.id === detailPerson.value?.id ? { ...node, avatarUrl: `/api/attachments/${payload.data!.id}` } : node);
-    }
-  } catch (error) { uploadError.value = error instanceof Error ? error.message : "附件上传失败"; }
-  finally { uploadSaving.value = false; input.value = ""; }
-}
-async function openAttachment(item: Attachment, download = false) {
-  attachmentBusyId.value = item.id;
-  attachmentError.value = "";
-  const popup = download ? null : window.open("", "_blank");
-  try {
-    const response = await fetch(`/api/attachments/${encodeURIComponent(item.id)}`, { headers: sessionToken.value ? { Authorization: `Bearer ${sessionToken.value}` } : {} });
-    if (!response.ok) throw new Error(await apiErrorMessage(response, "附件暂时无法读取"));
-    const objectUrl = URL.createObjectURL(await response.blob());
-    attachmentObjectUrls.add(objectUrl);
-    if (popup) popup.location.href = objectUrl;
-    else {
-      const link = document.createElement("a");
-      link.href = objectUrl;
-      if (download) link.download = item.originalName;
-      else link.target = "_blank";
-      link.rel = "noreferrer";
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-    }
-    window.setTimeout(() => { URL.revokeObjectURL(objectUrl); attachmentObjectUrls.delete(objectUrl); }, 60_000);
-  } catch (error) {
-    popup?.close();
-    attachmentError.value = error instanceof Error ? error.message : "附件暂时无法读取";
-  } finally {
-    attachmentBusyId.value = null;
-  }
-}
-async function removeAttachment(item: Attachment) {
-  if (!sessionToken.value || !isOwnDetail.value || attachmentBusyId.value) return;
-  attachmentBusyId.value = item.id;
-  attachmentError.value = "";
-  try {
-    const response = await fetch(`/api/me/attachments/${encodeURIComponent(item.id)}`, { method: "DELETE", headers: { Authorization: `Bearer ${sessionToken.value}` } });
-    if (!response.ok) throw new Error(await apiErrorMessage(response, "附件删除失败"));
-    const personId = detail.value?.id;
-    if (personId) {
-      await openDetailById(personId);
-      const refreshed = detailPerson.value;
-      if (refreshed) tree.value.nodes = tree.value.nodes.map((node) => node.id === refreshed.id ? { ...node, avatarUrl: refreshed.avatarUrl } : node);
-    }
-  } catch (error) {
-    attachmentError.value = error instanceof Error ? error.message : "附件删除失败";
-  } finally {
-    attachmentBusyId.value = null;
-  }
-}
 function toggleGroup(id: string) {
   expanded.value[id] = expanded.value[id] === false;
   if (selectedPerson.value?.cohort?.id === id) selectedPerson.value = null;
   nextTick(measureGraph);
 }
 function closePreview() { selectedPerson.value = null; }
-function navigate(path: string) {
-  window.history.pushState({}, "", path);
-  pathname.value = path;
-  selectedPerson.value = null;
-  detailPerson.value = null;
-  detailError.value = null;
-  hoveredId.value = null;
-  profileEditing.value = false;
-  profileSaved.value = false;
-  window.scrollTo({ top: 0, behavior: reducedMotion ? "auto" : "smooth" });
-  if (path === "/") {
-    centeredOnce = false;
-    nextTick(() => { observeCanvas(); measureGraph(); });
-  } else {
-    const routeId = path.match(/^\/person\/([^/]+)/)?.[1];
-    if (routeId) {
-      let id = routeId;
-      try { id = decodeURIComponent(routeId); } catch { /* keep the encoded id for the API */ }
-      const local = people.value.find((person) => person.id === id);
-      if (local) void openDetail(local);
-      else void openDetailById(id);
-    }
-  }
-}
-function onPopState() {
+function applyLocation() {
   pathname.value = window.location.pathname;
+  search.value = window.location.search;
   selectedPerson.value = null;
-  detailPerson.value = null;
-  detailError.value = null;
-  profileEditing.value = false;
-  profileSaved.value = false;
-  if (detailRouteId.value) void openDetailById(detailRouteId.value);
-  else nextTick(() => { observeCanvas(); measureGraph(); });
-}
-async function openDetail(person: Person) {
-  await openDetailById(person.id, person);
-}
-async function openDetailById(id: string, localPerson?: Person) {
-  const requestId = ++detailRequestId;
-  const fallback = localPerson ?? people.value.find((person) => person.id === id) ?? null;
-  detailLoading.value = true;
-  detailError.value = null;
-  detailPerson.value = fallback;
-  try {
-    const response = await fetch(`/api/people/${encodeURIComponent(id)}`, {
-      headers: sessionToken.value ? { Authorization: `Bearer ${sessionToken.value}` } : {},
+  hoveredId.value = null;
+  if (isHomeRoute.value) {
+    centeredOnce = false;
+    nextTick(() => {
+      observeCanvas();
+      measureGraph();
+      if (focusId.value) focusStar(focusId.value);
     });
-    if (!response.ok) throw new Error(response.status === 404 ? "档案不存在" : "档案暂时无法读取");
-    const payload = await response.json() as { data?: Record<string, unknown> };
-    if (!payload.data) throw new Error("档案数据为空");
-    if (requestId === detailRequestId) detailPerson.value = normaliseNode({ ...(fallback ?? {}), ...payload.data, id });
-  } catch (error) {
-    if (requestId !== detailRequestId) return;
-    detailError.value = error instanceof Error ? error.message : "档案暂时无法读取";
-    if (!fallback) detailPerson.value = null;
-  } finally {
-    if (requestId === detailRequestId) detailLoading.value = false;
   }
 }
-function viewDetail(person: Person) { navigate(`/person/${encodeURIComponent(person.id)}`); }
+function navigate(path: string) {
+  const target = new URL(path, window.location.origin);
+  if (target.pathname + target.search !== window.location.pathname + window.location.search) window.history.pushState({}, "", target.pathname + target.search);
+  applyLocation();
+  window.scrollTo({ top: 0, behavior: "auto" });
+}
+/** Route changes that start from a star bloom into the destination page. */
+function go(path: string, origin?: DOMRect | null, tone: Tone = "aqua") {
+  if (origin && path.startsWith("/person/")) void warpTo(origin, tone, () => navigate(path));
+  else navigate(path);
+}
+function onPopState() { applyLocation(); }
+function viewDetail(person: Person) {
+  go(`/person/${encodeURIComponent(person.id)}`, coreRect(person.id), toneOf(person));
+}
+/** Centres a member's star in the map (used by “在星谱中定位”) and opens its preview. */
+function focusStar(id: string) {
+  const person = people.value.find((item) => item.id === id);
+  if (!person) return;
+  query.value = "";
+  if (person.cohort && expanded.value[person.cohort.id] === false) expanded.value[person.cohort.id] = true;
+  nextTick(() => {
+    const node = nodeRefs.get(id);
+    const scroller = scrollRef.value;
+    if (!node || !scroller) return;
+    const nodeRect = node.getBoundingClientRect();
+    const scrollerRect = scroller.getBoundingClientRect();
+    scroller.scrollLeft += nodeRect.left + nodeRect.width / 2 - (scrollerRect.left + scrollerRect.width / 2);
+    centeredOnce = true;
+    node.scrollIntoView({ block: "center", behavior: reducedMotion ? "auto" : "smooth" });
+    window.setTimeout(() => { selectedPerson.value = null; openPreview(person); node.focus({ preventScroll: true }); }, reducedMotion ? 0 : 450);
+  });
+}
+function onPersonUpdated(updated: Person) {
+  tree.value.nodes = tree.value.nodes.map((node) => node.id === updated.id ? {
+    ...node, avatarUrl: updated.avatarUrl, bio: updated.bio, motto: updated.motto, destination: updated.destination, memberType: updated.memberType,
+    groupRole: updated.groupRole, version: updated.version, education: updated.education, experience: updated.experience, skills: updated.skills, links: updated.links,
+  } : node);
+}
+function onSessionExpired() {
+  clearSession();
+  openAuth();
+  authError.value = "会话已失效，请重新登录";
+}
 function coreRect(id: string) {
   const node = nodeRefs.get(id);
   return (node?.querySelector(".star-avatar-core") ?? node)?.getBoundingClientRect() ?? null;
@@ -657,7 +424,6 @@ function onResize() { measureGraph(); if (selectedPerson.value) measurePopup(); 
 function onKeydown(event: KeyboardEvent) {
   if (event.key !== "Escape") return;
   if (authOpen.value) closeAuth();
-  else if (profileEditing.value) cancelProfileEdit();
   else closePreview();
 }
 function onPointerDown(event: PointerEvent) {
@@ -675,14 +441,11 @@ onMounted(() => {
   window.addEventListener("resize", onResize);
   window.addEventListener("keydown", onKeydown);
   window.addEventListener("pointerdown", onPointerDown);
-  if (detailRouteId.value) void openDetailById(detailRouteId.value);
 });
 onUnmounted(() => {
   starfield?.destroy();
   resizeObserver?.disconnect();
   window.removeEventListener("popstate", onPopState);
-  attachmentObjectUrls.forEach((url) => URL.revokeObjectURL(url));
-  attachmentObjectUrls.clear();
   window.removeEventListener("resize", onResize);
   window.removeEventListener("keydown", onKeydown);
   window.removeEventListener("pointerdown", onPointerDown);
@@ -704,17 +467,36 @@ onUnmounted(() => {
         </span>
         <span class="brand-name">翻斗星谱<small>FANDOU LINEAGE</small></span>
       </a>
+      <nav class="site-nav" aria-label="主导航">
+        <a href="/" :class="{ active: isHomeRoute }" :aria-current="isHomeRoute ? 'page' : undefined" @click.prevent="navigate('/')">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5c.3 3.6 3.2 6.4 6.8 6.8-3.6.3-6.5 3.2-6.8 6.8-.3-3.6-3.2-6.5-6.8-6.8 3.6-.4 6.5-3.2 6.8-6.8Z" /><circle cx="19" cy="19" r="1.2" /><circle cx="5" cy="18" r="1" /></svg><span>星谱</span>
+        </a>
+        <a v-if="sessionUser" :href="`/person/${encodeURIComponent(sessionUser.personId)}`" :class="{ active: detailRouteId === myPersonId }" :aria-current="detailRouteId === myPersonId ? 'page' : undefined" @click.prevent="openMyProfile">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8.5" r="3.5" /><path d="M5 20c.8-3.6 3.6-5.5 7-5.5s6.2 1.9 7 5.5" /></svg><span>我的主页</span>
+        </a>
+        <a v-if="sessionUser" href="/students" :class="{ active: isStudentsRoute }" :aria-current="isStudentsRoute ? 'page' : undefined" @click.prevent="navigate('/students')">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5.5" r="2.2" /><circle cx="6" cy="17" r="2.2" /><circle cx="18" cy="17" r="2.2" /><path d="M11 7.5 7 15M13 7.5l4 7.5" /></svg><span>徒弟管理</span>
+        </a>
+        <a v-if="sessionUser?.role === 'admin'" href="/admin" :class="{ active: isAdminRoute }" :aria-current="isAdminRoute ? 'page' : undefined" @click.prevent="navigate('/admin')">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8" /></svg><span>管理</span>
+        </a>
+      </nav>
       <div class="header-meta">
         <template v-if="apiFailed">
           <span class="status-dot offline"></span>
           <span>星谱暂离线</span>
         </template>
-        <button class="account-entry" type="button" :disabled="sessionLoading" @click="openMyProfile">
+        <button v-if="!sessionUser" class="account-entry" type="button" :disabled="sessionLoading" @click="openAuth()">
           <span class="account-orb" aria-hidden="true"></span>
-          {{ sessionLoading ? "读取账号" : (sessionUser?.displayName ?? "登录 / 加入") }}
+          {{ sessionLoading ? "读取账号" : "登录 / 加入" }}
         </button>
-        <button v-if="sessionUser" class="account-logout" type="button" aria-label="退出登录" @click="logout">退出</button>
-        <a v-if="sessionUser?.role === 'admin'" class="account-logout" href="/admin" @click.prevent="navigate('/admin')">管理</a>
+        <template v-else>
+          <button class="account-chip" type="button" :title="`${sessionUser.displayName} 的主页`" @click="openMyProfile">
+            <StarAvatar :name="sessionUser.displayName" :avatar-url="people.find((item) => item.id === sessionUser?.personId)?.avatarUrl ?? null" tone="gold" size="sm" />
+            <span>{{ sessionUser.displayName }}</span>
+          </button>
+          <button class="account-logout" type="button" aria-label="退出登录" @click="logout">退出</button>
+        </template>
       </div>
     </header>
 
@@ -728,7 +510,35 @@ onUnmounted(() => {
       <AdminPanel v-if="sessionUser?.role === 'admin' && sessionToken" :session-token="sessionToken" @changed="refreshAfterAdminChange" />
       <section v-else class="state-message" role="status"><p>管理员账号登录后才能打开维护工作台。</p><button type="button" @click="() => openAuth()">登录管理员账号</button></section>
     </main>
-    <main v-else-if="!isDetailRoute" class="home-page">
+    <main v-else-if="isStudentsRoute" class="workspace-page" aria-live="polite">
+      <StudentStudio
+        v-if="sessionUser && sessionToken"
+        :key="sessionUser.personId"
+        :session-token="sessionToken"
+        :session-user="sessionUser"
+        :people="people"
+        :root-person-id="rootPerson?.id ?? null"
+        @navigate="go"
+        @changed="loadTree"
+        @session-expired="onSessionExpired"
+      />
+      <section v-else-if="!sessionLoading" class="state-message" role="status"><p>登录后可以管理自己的徒弟、邀请和代建账号。</p><button type="button" @click="() => openAuth()">登录</button></section>
+      <div v-else class="state-message"><span class="loading-ring"></span>正在读取账号</div>
+    </main>
+    <main v-else-if="isDetailRoute && detailRouteId" class="workspace-page" aria-live="polite">
+      <ProfilePage
+        :person-id="detailRouteId"
+        :people="people"
+        :root-person-id="rootPerson?.id ?? null"
+        :session-token="sessionToken"
+        :session-user="sessionUser"
+        @navigate="go"
+        @person-updated="onPersonUpdated"
+        @require-auth="openAuth()"
+        @session-expired="onSessionExpired"
+      />
+    </main>
+    <main v-else class="home-page">
       <section class="hero">
         <p class="eyebrow">THE LINEAGE CONSTELLATION</p>
         <h1>让每颗星，<em>找到自己的轨道。</em></h1>
@@ -749,12 +559,10 @@ onUnmounted(() => {
           <span v-if="query" class="legend-count">匹配 {{ matchingIds.size }} 颗星</span>
           <span class="legend-item"><i class="legend-star aqua"></i>在读</span>
           <span class="legend-item"><i class="legend-star fog"></i>毕业</span>
-          <span class="legend-item destination-key destination-big_tech"><i></i>大厂</span>
-          <span class="legend-item destination-key destination-postgraduate_985"><i></i>985研</span>
-          <span class="legend-item destination-key destination-postgraduate_211"><i></i>211研</span>
-          <span class="legend-item destination-key destination-startup"><i></i>创业</span>
-          <span class="legend-item destination-key destination-further_study"><i></i>继续深造</span>
-          <span class="legend-item destination-key destination-other"><i></i>其他</span>
+          <span v-for="[value, label] in legendDestinations" :key="value" class="legend-item destination-key" :class="`destination-${value}`"><i></i>{{ label }}</span>
+          <span class="legend-divider" aria-hidden="true"></span>
+          <span class="legend-item role-key group-leader"><i><svg viewBox="0 0 24 24"><path d="M3 18 4.5 7l5 4.5L12 4l2.5 7.5 5-4.5L21 18Z" /></svg></i>组长</span>
+          <span class="legend-item role-key group-vice_leader"><i><svg viewBox="0 0 24 24"><path d="M3 18 4.5 7l5 4.5L12 4l2.5 7.5 5-4.5L21 18Z" /></svg></i>副组长</span>
           <span class="legend-item"><i class="legend-line"></i>传承轨迹</span>
         </div>
       </section>
@@ -805,10 +613,10 @@ onUnmounted(() => {
                     :key="person.id"
                     :ref="(el) => setNodeRef(person.id, el as Element)"
                     class="star-node"
-                    :class="[destinationClass(person), { dimmed: query && !isVisible(person), highlighted: query && isVisible(person), root: person.id === rootPerson?.id, guest: person.relationScope === 'cohort_guest', selected: selectedPerson?.id === person.id }]"
+                    :class="[destinationClass(person), groupRoleClass(person), { dimmed: query && !isVisible(person), highlighted: query && isVisible(person), root: person.id === rootPerson?.id, guest: person.relationScope === 'cohort_guest', selected: selectedPerson?.id === person.id, mine: person.id === myPersonId }]"
                     :style="{ '--x': layout.offsets.get(person.id) ?? 0, '--delay': `${rowIndex * 140 + index * 60}ms` }"
                     type="button"
-                    :aria-label="`${person.name}，${formatCohort(person.cohort)}，${relationLabel(person)}${person.memberType ? `，${membershipLabel(person)}` : ''}${person.destination ? `，去向${destinationLabel(person)}` : ''}`"
+                    :aria-label="`${person.name}，${formatCohort(person.cohort)}，${relationLabel(person)}${person.groupRole ? `，${groupRoleLabels[person.groupRole]}` : ''}${person.memberType ? `，${membershipLabel(person)}` : ''}${person.destination ? `，去向${destinationLabel(person)}` : ''}`"
                     :aria-expanded="selectedPerson?.id === person.id"
                     @click="openPreview(person)"
                     @mouseenter="hoveredId = person.id"
@@ -816,9 +624,13 @@ onUnmounted(() => {
                     @focus="hoveredId = person.id"
                     @blur="hoveredId = null"
                   >
+                    <span v-if="person.groupRole" class="node-crest" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 18 4.5 7l5 4.5L12 4l2.5 7.5 5-4.5L21 18Z" /></svg></span>
                     <StarAvatar :name="person.name" :avatar-url="person.avatarUrl" :tone="toneOf(person)" :size="person.id === rootPerson?.id ? 'lg' : 'md'" />
                     <span class="star-name">{{ person.name }}</span>
-                    <span v-if="person.destination" class="destination-badge">{{ destinationLabel(person) }}</span>
+                    <span class="star-badges">
+                      <span v-if="person.groupRole" class="role-tag">{{ groupRoleLabels[person.groupRole] }}</span>
+                      <span v-if="person.destination" class="destination-badge">{{ destinationLabel(person) }}</span>
+                    </span>
                   </button>
                 </div>
               </div>
@@ -829,7 +641,7 @@ onUnmounted(() => {
             v-if="selectedPerson"
             ref="popoverRef"
             class="quick-popover"
-            :class="destinationClass(selectedPerson)"
+            :class="[destinationClass(selectedPerson), groupRoleClass(selectedPerson)]"
             :style="{ left: `${popupPosition.left}px`, top: `${popupPosition.top}px`, '--arrow': `${popupPosition.arrow}px` }"
             role="dialog"
             :aria-label="`${selectedPerson.name}简介`"
@@ -839,12 +651,12 @@ onUnmounted(() => {
             <div class="popover-person">
               <StarAvatar :name="selectedPerson.name" :avatar-url="selectedPerson.avatarUrl" :tone="toneOf(selectedPerson)" size="sm" />
               <div>
-                <h2>{{ selectedPerson.name }}</h2>
-                <p>{{ selectedPerson.role }}</p>
+                <h2>{{ selectedPerson.name }}<span v-if="selectedPerson.groupRole" class="role-tag">{{ groupRoleLabels[selectedPerson.groupRole] }}</span></h2>
+                <p>{{ selectedPerson.motto || selectedPerson.role }}</p>
               </div>
             </div>
             <p class="popover-copy">{{ selectedPerson.bio || "这颗星暂时保持神秘。" }}</p>
-            <span v-if="selectedPerson.destination" class="destination-badge popover-destination" :class="destinationClass(selectedPerson)">去向 · {{ destinationLabel(selectedPerson) }}</span>
+            <span v-if="selectedPerson.destination" class="destination-badge popover-destination">去向 · {{ destinationLabel(selectedPerson) }}</span>
             <div class="tag-row compact"><span v-for="tag in selectedPerson.tags" :key="tag" class="tag">{{ tag }}</span></div>
             <button class="popover-detail" type="button" @click="viewDetail(selectedPerson)">查看完整档案 <span aria-hidden="true">↗</span></button>
           </div>
@@ -852,158 +664,6 @@ onUnmounted(() => {
       </section>
       <footer class="page-footer"><span>翻斗星谱</span><span>成员资料持续更新中</span></footer>
     </main>
-    <main v-else class="detail-page" aria-live="polite">
-      <button class="back-link" type="button" @click="navigate('/')">← 返回星谱</button>
-      <div v-if="detail" class="detail-layout">
-        <section class="detail-intro" :class="destinationClass(detail)">
-          <p class="eyebrow">PERSONAL PROFILE <span>{{ formatCohort(detail.cohort) }}</span></p>
-          <div class="detail-avatar">
-            <StarAvatar :name="detail.name" :avatar-url="detail.avatarUrl" :tone="toneOf(detail)" size="xl" />
-          </div>
-          <h1>{{ detail.name }}</h1>
-          <p class="detail-role">{{ detail.role }}</p>
-          <span v-if="detail.destination" class="destination-badge detail-destination" :class="destinationClass(detail)">去向 · {{ destinationLabel(detail) }}</span>
-          <span v-if="detail.memberType" class="membership-badge" :class="`membership-${detail.memberType}`">{{ membershipLabel(detail) }}</span>
-          <div class="tag-row"><span v-for="tag in detail.tags" :key="tag" class="tag">{{ tag }}</span></div>
-          <span class="record-note" :class="{ graduated: detail.status === 'archived' }"><i></i>{{ relationLabel(detail) }}</span>
-          <button v-if="isOwnDetail" class="profile-edit-trigger" type="button" @click="startProfileEdit">编辑我的资料</button>
-          <p v-if="isOwnDetail && profileSaved" class="profile-success" role="status">资料已保存</p>
-        </section>
-        <section class="detail-sections">
-          <article v-if="isOwnDetail && profileEditing" class="detail-section profile-editor">
-            <span class="section-label">编辑我的资料</span>
-            <form @submit.prevent="saveProfile">
-              <label class="form-field">
-                <span>简介</span>
-                <textarea v-model="profileForm.bio" maxlength="10000" rows="5" placeholder="可留空"></textarea>
-              </label>
-              <label class="form-field">
-                <span>去向</span>
-                <select v-model="profileForm.destination">
-                  <option value="">暂未填写</option>
-                  <option v-for="(label, value) in destinationLabels" :key="value" :value="value">{{ label }}</option>
-                </select>
-              </label>
-              <label class="form-field">
-                <span>组员身份</span>
-                <select v-model="profileForm.memberType">
-                  <option value="">暂未标记</option>
-                  <option value="formal">正式组员</option>
-                  <option value="probationary">预备组员</option>
-                </select>
-              </label>
-              <label class="form-field"><span>联系邮箱（所有人可见）</span><input v-model="profileForm.contactEmail" type="email" maxlength="254" placeholder="可留空" /></label>
-              <label class="form-field"><span>教育经历</span><textarea v-model="profileForm.education" maxlength="10000" rows="3" placeholder="学校、专业、研究方向等，可留空"></textarea></label>
-              <label class="form-field"><span>工作 / 项目经历</span><textarea v-model="profileForm.experience" maxlength="20000" rows="4" placeholder="可留空"></textarea></label>
-              <label class="form-field"><span>技能（用逗号分隔）</span><input v-model="profileForm.skills" maxlength="2400" placeholder="例如：产品设计，TypeScript，写作" /></label>
-              <label class="form-field"><span>个人链接（每行：名称 | URL）</span><textarea v-model="profileForm.links" maxlength="10000" rows="3" placeholder="作品集 | https://example.com"></textarea></label>
-              <div class="profile-avatar-setting">
-                <div class="profile-avatar-preview">
-                  <StarAvatar :name="detail.name" :avatar-url="detail.avatarUrl" :tone="toneOf(detail)" size="lg" />
-                </div>
-                <div class="profile-avatar-copy">
-                  <span class="section-label">头像个性化</span>
-                  <h3>{{ hasAvatar ? "当前头像" : "设置你的头像" }}</h3>
-                  <p>头像会用于星谱节点和个人页展示，支持 JPG、PNG、WebP。</p>
-                  <label class="profile-upload-button profile-avatar-button">
-                    <span>{{ uploadSaving ? "处理中…" : (hasAvatar ? "更换头像" : "选择头像") }}</span>
-                    <input type="file" accept="image/jpeg,image/png,image/webp" :disabled="uploadSaving" @change="uploadAttachment($event, 'avatar')" />
-                  </label>
-                </div>
-              </div>
-              <div class="profile-upload-panel">
-                <div class="profile-upload-heading">
-                  <div><span class="section-label">资料文件</span><p>简历、照片和证明材料按类别单独管理，上传后会立即保存。</p></div>
-                  <span class="profile-upload-count">{{ profileFileAttachments.length }} 份文件</span>
-                </div>
-                <div class="profile-upload-grid">
-                  <article v-for="card in uploadCards" :key="card.category" class="profile-upload-card" :class="`upload-${card.category}`">
-                    <div class="profile-upload-card-top">
-                      <span class="upload-card-icon" aria-hidden="true">{{ card.category === 'resume' ? '▤' : card.category === 'photo' ? '◌' : '◇' }}</span>
-                      <div><h3>{{ card.title }}</h3><p>{{ card.description }}</p></div>
-                    </div>
-                    <div v-if="attachmentsFor(card.category).length" class="profile-upload-current">
-                      <span class="upload-current-dot"></span>
-                      <span class="upload-current-name">{{ attachmentsFor(card.category)[0].originalName }}</span>
-                      <span v-if="attachmentsFor(card.category).length > 1" class="upload-current-count">+{{ attachmentsFor(card.category).length - 1 }}</span>
-                    </div>
-                    <div v-else class="profile-upload-empty">还没有上传</div>
-                    <label class="profile-upload-button">
-                      <span>{{ uploadSaving ? '处理中…' : attachmentsFor(card.category).length ? '替换文件' : '选择文件' }}</span>
-                      <input type="file" :accept="card.accept" :disabled="uploadSaving" @change="uploadAttachment($event, card.category)" />
-                    </label>
-                  </article>
-                </div>
-                <p v-if="uploadError" class="form-error" role="alert">{{ uploadError }}</p>
-              </div>
-              <div class="content-editor profile-achievement-editor">
-                <span class="section-label">新增事迹或荣誉</span>
-                <div class="content-editor-row"><select v-model="achievementForm.kind"><option value="achievement">事迹</option><option value="honor">荣誉</option></select><input v-model.trim="achievementForm.title" maxlength="200" placeholder="标题" /></div>
-                <textarea v-model.trim="achievementForm.content" maxlength="20000" rows="3" placeholder="写下这段经历"></textarea>
-                <div class="form-actions"><button class="primary-command" type="button" :disabled="achievementSaving || !achievementForm.title.trim() || !achievementForm.content.trim()" @click="addAchievement">{{ achievementSaving ? '保存中…' : '添加记录' }}</button></div>
-              </div>
-              <p v-if="profileError" class="form-error" role="alert">{{ profileError }}</p>
-              <div class="form-actions">
-                <button class="secondary-command" type="button" :disabled="profileSaving" @click="cancelProfileEdit">结束编辑</button>
-                <button class="primary-command" type="submit" :disabled="profileSaving">{{ profileSaving ? "保存中" : "保存资料" }}</button>
-              </div>
-            </form>
-          </article>
-          <template v-else>
-          <article class="detail-section">
-            <span class="section-label">{{ detailSectionNumber("bio") }} / 简介</span>
-            <p v-if="detail.bio" class="detail-copy">{{ detail.bio }}</p>
-            <div v-else class="empty-detail"><span>✦</span><p>这颗星还在积攒星尘，简介稍后回来。</p></div>
-          </article>
-          <article v-if="detail.education || detail.experience || detail.skills?.length || detail.links?.length || detail.contactEmail" class="detail-section profile-facts">
-            <div v-if="detail.education" class="profile-fact"><span class="section-label">{{ detailSectionNumber("education") }} / 教育经历</span><p class="detail-copy profile-preline">{{ detail.education }}</p></div>
-            <div v-if="detail.experience" class="profile-fact"><span class="section-label">{{ detailSectionNumber("experience") }} / 工作与项目</span><p class="detail-copy profile-preline">{{ detail.experience }}</p></div>
-            <div v-if="detail.skills?.length" class="profile-fact"><span class="section-label">{{ detailSectionNumber("skills") }} / 技能</span><div class="tag-row"><span v-for="skill in detail.skills" :key="skill" class="tag">{{ skill }}</span></div></div>
-            <div v-if="detail.links?.length" class="profile-fact"><span class="section-label">{{ detailSectionNumber("links") }} / 个人链接</span><div class="profile-content-list"><a v-for="link in detail.links" :key="link.url" class="content-item attachment-item" :href="link.url" target="_blank" rel="noreferrer"><strong>{{ link.label }}</strong><p>{{ link.url }}</p></a></div></div>
-            <div v-if="detail.contactEmail" class="profile-fact"><span class="section-label">{{ detailSectionNumber("contact") }} / 联系方式</span><a class="content-item attachment-item" :href="`mailto:${detail.contactEmail}`">{{ detail.contactEmail }}</a></div>
-          </article>
-           <article class="detail-section split-section">
-             <div>
-               <span class="section-label">{{ detailSectionNumber("relation") }} / 关系</span>
-               <button v-if="detailMentor" class="popover-detail" type="button" @click="viewDetail(detailMentor)">师傅：{{ detailMentor.name }} <span aria-hidden="true">↗</span></button>
-               <p v-else class="relation-muted">暂无师傅</p>
-               <div v-if="detailStudents.length" class="relation-students">
-                 <span class="section-label">徒弟</span>
-                 <button v-for="student in detailStudents" :key="student.id" class="popover-detail" type="button" @click="viewDetail(student)">徒弟：{{ student.name }} <span aria-hidden="true">↗</span></button>
-               </div>
-            </div>
-            <div>
-              <span class="section-label">{{ detailSectionNumber("joined") }} / 加入时间</span>
-              <h2>{{ detail.joinedAt }}</h2>
-              <p>{{ formatCohort(detail.cohort) }}</p>
-            </div>
-          </article>
-          <article v-if="showRecordsSection" class="detail-section">
-            <span class="section-label">{{ detailSectionNumber("attachments") }} / 事迹与附件</span>
-            <div v-if="detailAchievements.length || profileFileAttachments.length" class="profile-content-list">
-              <article v-for="item in detailAchievements" :key="item.id" class="content-item"><strong>{{ item.kind === 'honor' ? '荣誉' : '事迹' }} · {{ item.title }}</strong><p>{{ item.content }}</p></article>
-              <div v-for="item in profileFileAttachments" :key="item.id" class="content-item attachment-item">
-                <button class="attachment-open" type="button" :disabled="Boolean(attachmentBusyId)" @click="openAttachment(item)">{{ attachmentBusyId === item.id ? '处理中…' : '打开' }}</button>
-                <button class="attachment-open" type="button" :disabled="Boolean(attachmentBusyId)" @click="openAttachment(item, true)">下载</button>
-                <strong>{{ item.category === 'resume' ? '简历' : item.category === 'photo' ? '照片' : '附件' }} · {{ item.originalName }}</strong> <span>· {{ item.visibility === 'private' ? '仅自己可见' : '成员可见' }}</span>
-                <button v-if="isOwnDetail && sessionToken && profileEditing" class="attachment-remove" type="button" :disabled="Boolean(attachmentBusyId)" @click="removeAttachment(item)">删除</button>
-              </div>
-            </div>
-            <div v-else-if="!detailAchievements.length && !profileFileAttachments.length" class="empty-detail"><span>✦</span><p>这颗星暂时没有公开记录。</p></div>
-            <p v-if="attachmentError" class="form-error" role="alert">{{ attachmentError }}</p>
-          </article>
-          <InvitePanel v-if="isOwnDetail && sessionToken" :mentor-id="detail.id" :mentor-name="detail.name" :mentor-cohort-year="detail.cohort?.year" :session-token="sessionToken" />
-          </template>
-        </section>
-      </div>
-      <div v-else class="state-message">
-        <span v-if="detailLoading" class="loading-ring"></span>
-        <span>{{ detailLoading ? "正在读取档案" : (detailError ?? "没有找到这份档案") }}</span>
-        <button v-if="detailError" type="button" @click="detailRouteId && openDetailById(detailRouteId)">重试</button>
-      </div>
-      <p v-if="detail && detailError" class="state-message" role="status">{{ detailError }}，当前显示已读取的档案摘要。</p>
-    </main>
-
     <div v-if="authOpen" class="modal-backdrop" @click.self="closeAuth">
       <section class="auth-dialog" role="dialog" aria-modal="true" :aria-labelledby="`auth-${authMode}-title`">
         <button class="popover-close" type="button" aria-label="关闭账号窗口" @click="closeAuth">×</button>

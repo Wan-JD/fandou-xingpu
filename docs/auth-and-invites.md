@@ -5,7 +5,7 @@
 ## 使用流程
 
 1. 师傅使用已经存在的数据库成员账号登录。仓库不内置样例账号或管理员。
-2. 打开自己的个人详情，点击“生成邀请链接”，把链接或其中的邀请码发给徒弟。
+2. 打开顶部导航的“徒弟管理”（`/students`），点击“生成邀请链接”，把链接或其中的邀请码发给徒弟。
 3. 徒弟打开 `/register?invite=<token>`，也可以直接访问 `/register` 后手动粘贴邀请码。
 4. 邀请页展示师傅级别和姓名。提交姓名、昵称、邮箱和密码后，账号、人物档案和 mentor 关系一起创建。
 5. 邀请成功消费后不能再次使用；过期、重复提交、邮箱冲突和并发接受都会被拒绝。
@@ -19,7 +19,11 @@
 - `DELETE /api/session`：退出当前会话。
 - `POST /api/session/register`：固定返回 `403 INVITE_REQUIRED`，防止绕过师傅邀请。
 - `GET /api/me/profile`：读取当前账号绑定的人物档案。
-- `PATCH /api/me/profile`：使用 `version` 做乐观并发控制，可修改昵称、简介和去向。
+- `PATCH /api/me/profile`：使用 `version` 做乐观并发控制，可修改签名、简介、封面主题、去向、组员身份、组内职务（组长 / 副组长）、联系邮箱、履历、技能和链接。
+- `GET /api/me/students`：徒弟管理工作台数据，包含直系徒弟的账号激活状态、认领状态和本人发出的邀请。
+- `POST /api/me/students/:personId/reset-password`：仅当代建账号从未被徒弟本人激活时，师傅才能重新生成初始密码；旧会话同时失效。
+- `DELETE /api/me/invites/:id`：撤销自己发出且尚未使用的邀请。
+- `GET /api/people/:id/posts`、`POST/PATCH/DELETE /api/me/posts`、`PUT/DELETE /api/posts/:id/like`：个人主页动态。动态只出现在作者主页；公开动态匿名可读，“仅成员”动态与其配图需要登录。每条动态最多 6 张图片，主页只能置顶一条。
 - `POST /api/invites`：登录后为当前人物生成 7 天有效的一次性邀请。
 - `GET /api/invites/:token`：预览邀请码状态和师傅摘要。
 - `POST /api/invites/:token/accept`：提交注册资料，原子创建账号、人物和师徒关系。

@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from "vue";
 
 type Member = {
   id: string; name: string; cohort_id: string | null; cohort_label: string | null; cohort_year: number | null;
-  status: "active" | "archived"; destination: string | null; mentor_id: string | null;
+  status: "active" | "archived"; destination: string | null; group_role: string | null; mentor_id: string | null;
   mentor_name: string | null; relation_scope: "lineage" | "cohort_guest"; version: number;
   bio: string; role: string; member_type: "formal" | "probationary"; is_featured: number; featured_note: string | null; tags_json: string;
   account_id: string | null; email: string | null; phone: string | null; account_role: "member" | "admin" | null;
@@ -23,8 +23,8 @@ const failure = ref("");
 const members = ref<Member[]>([]);
 const invites = ref<Invite[]>([]);
 const editingId = ref("");
-const editForm = ref({ name: "", bio: "", role: "", memberType: "formal" as "formal" | "probationary", isFeatured: false, featuredNote: "", tags: "", cohortYear: "", status: "active", destination: "", mentorId: "", relationScope: "lineage" });
-const memberForm = ref({ name: "", cohortYear: String(new Date().getFullYear()), status: "active", memberType: "formal" as "formal" | "probationary", destination: "", mentorId: "", relationScope: "lineage" });
+const editForm = ref({ name: "", bio: "", role: "", memberType: "formal" as "formal" | "probationary", isFeatured: false, featuredNote: "", tags: "", cohortYear: "", status: "active", destination: "", groupRole: "", mentorId: "", relationScope: "lineage" });
+const memberForm = ref({ name: "", cohortYear: String(new Date().getFullYear()), status: "active", memberType: "formal" as "formal" | "probationary", destination: "", groupRole: "", mentorId: "", relationScope: "lineage" });
 const accountForm = ref({ personId: "", email: "", phone: "", password: "", role: "member" });
 const resetPasswords = ref<Record<string, string>>({});
 
@@ -34,8 +34,10 @@ const tabs: { id: Tab; label: string }[] = [
 ];
 const destinationOptions = [
   ["", "暂未填写"], ["big_tech", "大厂"], ["postgraduate_985", "985 研"],
-  ["postgraduate_211", "211 研"], ["startup", "创业"], ["further_study", "继续深造"], ["other", "其他"],
+  ["postgraduate_211", "211 研"], ["other", "其他"],
 ];
+const groupRoleOptions = [["", "无"], ["leader", "组长"], ["vice_leader", "副组长"]];
+const groupRoleText: Record<string, string> = { leader: "组长", vice_leader: "副组长" };
 const accountlessMembers = computed(() => members.value.filter((member) => !member.account_id));
 const headers = computed(() => ({ Authorization: `Bearer ${props.sessionToken}`, "Content-Type": "application/json" }));
 
@@ -87,8 +89,9 @@ async function createMember() {
     cohortYear: memberForm.value.cohortYear ? Number(memberForm.value.cohortYear) : null,
     mentorId: memberForm.value.mentorId || null,
     destination: memberForm.value.destination || null,
+    groupRole: memberForm.value.groupRole || null,
   }) }), "人物已加入星谱", true);
-  if (ok) memberForm.value = { name: "", cohortYear: String(new Date().getFullYear()), status: "active", memberType: "formal", destination: "", mentorId: "", relationScope: "lineage" };
+  if (ok) memberForm.value = { name: "", cohortYear: String(new Date().getFullYear()), status: "active", memberType: "formal", destination: "", groupRole: "", mentorId: "", relationScope: "lineage" };
 }
 
 function editMember(member: Member) {
@@ -98,7 +101,7 @@ function editMember(member: Member) {
     isFeatured: Boolean(member.is_featured), featuredNote: member.featured_note ?? "",
     tags: (() => { try { return (JSON.parse(member.tags_json) as string[]).join("、"); } catch { return ""; } })(),
     cohortYear: member.cohort_year == null ? "" : String(member.cohort_year), status: member.status,
-    destination: member.destination ?? "", mentorId: member.mentor_id ?? "", relationScope: member.relation_scope,
+    destination: member.destination ?? "", groupRole: member.group_role ?? "", mentorId: member.mentor_id ?? "", relationScope: member.relation_scope,
   };
 }
 
@@ -117,6 +120,7 @@ async function saveMember(member: Member) {
       cohortYear: editForm.value.cohortYear ? Number(editForm.value.cohortYear) : null,
       mentorId: editForm.value.mentorId || null,
       destination: editForm.value.destination || null,
+      groupRole: editForm.value.groupRole || null,
       version: member.version,
     }),
   }), "成员资料已保存", true);
@@ -206,6 +210,7 @@ onMounted(loadAll);
         <label>状态<select v-model="memberForm.status"><option value="active">在读</option><option value="archived">毕业</option></select></label>
         <label>组员身份<select v-model="memberForm.memberType"><option value="formal">正式组员</option><option value="probationary">预备组员</option></select></label>
         <label>去向<select v-model="memberForm.destination"><option v-for="option in destinationOptions" :key="option[0]" :value="option[0]">{{ option[1] }}</option></select></label>
+        <label>组内职务<select v-model="memberForm.groupRole"><option v-for="option in groupRoleOptions" :key="option[0]" :value="option[0]">{{ option[1] }}</option></select></label>
         <label>师傅<select v-model="memberForm.mentorId"><option value="">无</option><option v-for="member in members" :key="member.id" :value="member.id">{{ member.name }}</option></select></label>
         <button class="primary-button" type="submit" :disabled="saving === 'member-new'">新增人物</button>
       </form>
@@ -220,6 +225,7 @@ onMounted(loadAll);
               <label>状态<select v-model="editForm.status"><option value="active">在读</option><option value="archived">毕业</option></select></label>
               <label>组员身份<select v-model="editForm.memberType"><option value="formal">正式组员</option><option value="probationary">预备组员</option></select></label>
               <label>去向<select v-model="editForm.destination"><option v-for="option in destinationOptions" :key="option[0]" :value="option[0]">{{ option[1] }}</option></select></label>
+              <label>组内职务<select v-model="editForm.groupRole"><option v-for="option in groupRoleOptions" :key="option[0]" :value="option[0]">{{ option[1] }}</option></select></label>
               <label>师傅<select v-model="editForm.mentorId"><option value="">无</option><option v-for="candidate in members.filter((item) => item.id !== member.id)" :key="candidate.id" :value="candidate.id">{{ candidate.name }}</option></select></label>
               <label class="wide-field">简介<textarea v-model="editForm.bio" maxlength="10000" rows="3"></textarea></label>
               <label>标签<input v-model.trim="editForm.tags" maxlength="1000" placeholder="以顿号或逗号分隔" /></label>
@@ -229,7 +235,7 @@ onMounted(loadAll);
             <div class="row-actions"><button type="button" @click="editingId = ''">取消</button><button class="primary-button" type="button" :disabled="saving === `member-${member.id}`" @click="saveMember(member)">保存</button></div>
           </template>
           <template v-else>
-            <div class="member-summary"><strong>{{ member.name }}</strong><span>{{ member.cohort_label ?? "未分级" }} · {{ member.status === "active" ? "在读" : "毕业" }} · {{ member.member_type === "probationary" ? "预备组员" : "正式组员" }} · {{ member.mentor_name ? `师从 ${member.mentor_name}` : "无师傅" }}</span></div>
+            <div class="member-summary"><strong>{{ member.name }}</strong><span>{{ member.cohort_label ?? "未分级" }} · {{ member.status === "active" ? "在读" : "毕业" }} · {{ member.member_type === "probationary" ? "预备组员" : "正式组员" }}<template v-if="member.group_role"> · {{ groupRoleText[member.group_role] }}</template> · {{ member.mentor_name ? `师从 ${member.mentor_name}` : "无师傅" }}</span></div>
             <div class="account-summary">
               <template v-if="member.account_id">
                 <span>{{ member.email ?? member.phone ?? "姓名登录" }} · {{ member.account_role === "admin" ? "管理员" : "成员" }} · {{ member.account_status === "active" ? "已启用" : "已停用" }}</span>
@@ -285,7 +291,7 @@ h2 { grid-column: 1 / -1; margin: 0; font-family: var(--serif); font-size: 18px;
 .admin-message.error { border-color: rgba(255, 155, 140, .35); color: #ffb4a8; }
 .admin-message.success { border-color: rgba(142, 217, 208, .35); color: var(--aqua); }
 .admin-loading, .empty-state { padding: 40px 0; color: var(--muted); text-align: center; }
-.admin-form { display: grid; grid-template-columns: repeat(6, minmax(110px, 1fr)); gap: 12px; margin-bottom: 24px; padding: 18px; border: 1px solid var(--line); border-radius: 8px; background: rgba(16, 35, 66, .28); }
+.admin-form { display: grid; grid-template-columns: repeat(7, minmax(100px, 1fr)); gap: 12px; margin-bottom: 24px; padding: 18px; border: 1px solid var(--line); border-radius: 8px; background: rgba(16, 35, 66, .28); }
 .admin-form label, .member-grid label { display: grid; gap: 6px; color: var(--ink-soft); font-size: 11px; }
 input, select, textarea { width: 100%; min-height: 38px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; outline: 0; background: rgba(3, 8, 20, .72); color: var(--ink); }
 input:focus, select:focus, textarea:focus { border-color: rgba(142, 217, 208, .55); }
