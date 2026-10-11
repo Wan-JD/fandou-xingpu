@@ -66,6 +66,7 @@ async function deletePersonAndAccount(
   actor: AdminVariables["adminUser"],
   personId: string | null,
   account: AccountRow | null,
+  auditAction: "person.delete" | "account.delete" = personId ? "person.delete" : "account.delete",
 ) {
   const db = env.DB!;
   if (account?.id === actor.id) return error(409, "CANNOT_DELETE_SELF", "不能删除自己的账号");
@@ -84,12 +85,13 @@ async function deletePersonAndAccount(
     ? await db.prepare("SELECT object_key FROM attachments WHERE person_id = ? AND status <> 'deleted'").bind(personId).all<{ object_key: string }>()
     : { results: [] as { object_key: string }[] };
   const targetId = account?.id ?? personId!;
+  const auditTargetId = auditAction === "account.delete" ? account?.id ?? personId! : personId ?? account!.id;
   await db.batch([
     db.prepare("DELETE FROM invitations WHERE created_by_user_id = ? OR mentor_id = ? OR accepted_person_id = ?")
       .bind(account?.id ?? null, personId, personId),
     ...(account ? [db.prepare("DELETE FROM users WHERE id = ?").bind(account.id)] : []),
     ...(personId ? [db.prepare("DELETE FROM people WHERE id = ?").bind(personId)] : []),
-    audit(db, actor.id, personId ? "person.delete" : "account.delete", personId ? "person" : "user", targetId, {
+    audit(db, actor.id, auditAction, auditAction === "account.delete" ? "user" : "person", auditTargetId, {
       accountId: account?.id ?? null,
       personId,
       accountDeleted: Boolean(account),
@@ -417,7 +419,7 @@ adminApi.delete("/accounts/:id", async (c) => {
   const account = await c.env.DB!.prepare("SELECT id, role, status, person_id FROM users WHERE id = ?")
     .bind(id).first<AccountRow>();
   if (!account) return error(404, "ACCOUNT_NOT_FOUND", "账号不存在");
-  const result = await deletePersonAndAccount(c.env, c.get("adminUser"), account.person_id, account);
+  const result = await deletePersonAndAccount(c.env, c.get("adminUser"), account.person_id, account, "account.delete");
   if (result instanceof Response) return result;
   return c.json({ data: result });
 });
