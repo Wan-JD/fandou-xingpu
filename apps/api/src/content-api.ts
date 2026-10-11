@@ -96,7 +96,8 @@ attachmentApi.get("/:id", async (c) => {
   if (!object) return error(404, "ATTACHMENT_NOT_FOUND", "附件不存在");
   const headers = new Headers();
   object.writeHttpMetadata(headers);
-  headers.set("Content-Disposition", `inline; filename*=UTF-8''${encodeURIComponent(item.originalName)}`);
+  // 头像是界面个性化资源，不作为可下载附件暴露文件名；其它资料才提供用户友好的附件名。
+  if (item.category !== "avatar") headers.set("Content-Disposition", `inline; filename*=UTF-8''${encodeURIComponent(item.originalName)}`);
   headers.set("Cache-Control", item.category === "avatar" ? "public, max-age=300" : "private, no-store");
   return new Response(object.body, { headers });
 });

@@ -2,18 +2,20 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import InvitePanel from "./components/InvitePanel.vue";
 import InviteRegistration from "./components/InviteRegistration.vue";
+import ClaimRegistration from "./components/ClaimRegistration.vue";
 import AdminPanel from "./components/AdminPanel.vue";
 import StarAvatar from "./components/StarAvatar.vue";
 import { mountStarfield, sparkle, type Starfield } from "./lib/starfield";
 
 type Status = "active" | "archived";
+type MembershipType = "formal" | "probationary";
 type Destination = "big_tech" | "postgraduate_985" | "postgraduate_211" | "startup" | "further_study" | "other";
 type Cohort = { id: string; label: string; year: number | null; sortOrder: number };
 type Achievement = { id: string; kind: "achievement" | "honor"; title: string; content: string; occurredOn: string | null; version: number };
 type Attachment = { id: string; originalName: string; mimeType: string; size: number; category: string; visibility: string; url: string | null };
 type ProfileLink = { label: string; url: string };
 type UploadCategory = "avatar" | "resume" | "photo" | "certificate";
-type Person = { id: string; name: string; nickname: string | null; avatarUrl: string | null; cohort: Cohort | null; relationScope: "lineage" | "cohort_guest"; isFeatured: boolean; status: Status; destination: Destination | null; mentorId: string | null; depth: number | null; directStudentIds: string[]; role: string; joinedAt: string; tags: string[]; bio: string; contactEmail?: string | null; education?: string | null; experience?: string | null; skills?: string[]; links?: ProfileLink[]; resume?: Attachment | null; version?: number; mentor?: Person | null; students?: Person[]; achievements?: Achievement[]; attachments?: Attachment[]; featuredNote?: string | null };
+type Person = { id: string; name: string; nickname: string | null; avatarUrl: string | null; cohort: Cohort | null; relationScope: "lineage" | "cohort_guest"; isFeatured: boolean; status: Status; memberType?: MembershipType | null; destination: Destination | null; mentorId: string | null; depth: number | null; directStudentIds: string[]; role: string; joinedAt: string; tags: string[]; bio: string; contactEmail?: string | null; education?: string | null; experience?: string | null; skills?: string[]; links?: ProfileLink[]; resume?: Attachment | null; version?: number; mentor?: Person | null; students?: Person[]; achievements?: Achievement[]; attachments?: Attachment[]; featuredNote?: string | null };
 type Edge = { id: string; mentorId: string; studentId: string };
 type Tree = { rootPersonId: string | null; nodes: Person[]; edges: Edge[]; generatedAt: string };
 type LinkSegment = { id: string; mentorId: string; studentId: string; path: string; x1: number; y1: number; x2: number; y2: number; crossCohort: boolean };
@@ -56,7 +58,7 @@ const profileEditing = ref(false);
 const profileSaving = ref(false);
 const profileError = ref<string | null>(null);
 const profileSaved = ref(false);
-const profileForm = ref<{ nickname: string; bio: string; destination: Destination | ""; contactEmail: string; education: string; experience: string; skills: string; links: string }>({ nickname: "", bio: "", destination: "", contactEmail: "", education: "", experience: "", skills: "", links: "" });
+const profileForm = ref<{ nickname: string; bio: string; destination: Destination | ""; memberType: MembershipType | ""; contactEmail: string; education: string; experience: string; skills: string; links: string }>({ nickname: "", bio: "", destination: "", memberType: "", contactEmail: "", education: "", experience: "", skills: "", links: "" });
 const achievementForm = ref({ kind: "achievement" as "achievement" | "honor", title: "", content: "" });
 const achievementSaving = ref(false);
 const uploadSaving = ref(false);
@@ -74,7 +76,7 @@ const rootPerson = computed(() => people.value.find((person) => person.id === tr
 const groups = computed(() => {
   const map = new Map<string, { cohort: Cohort; members: Person[] }>();
   people.value.forEach((person) => {
-    const cohort = person.cohort ?? { id: "uncategorized", label: "未分届次", year: null, sortOrder: 99 };
+    const cohort = person.cohort ?? { id: "uncategorized", label: "未分级", year: null, sortOrder: 99 };
     const group = map.get(cohort.id) ?? { cohort, members: [] };
     group.members.push(person);
     map.set(cohort.id, group);
@@ -159,7 +161,7 @@ const layout = computed(() => {
 });
 
 const rows = computed(() => groups.value.map((group) => ({ ...group, members: group.members.slice().sort((a, b) => (layout.value.offsets.get(a.id) ?? 0) - (layout.value.offsets.get(b.id) ?? 0)) })));
-const formatCohort = (cohort: Cohort | null) => cohort?.year ? `${cohort.year} 届` : "未分届次";
+const formatCohort = (cohort: Cohort | null) => cohort?.year ? `${cohort.year} 级` : "未分级";
 const destinationLabels: Record<Destination, string> = {
   big_tech: "大厂",
   postgraduate_985: "985研",
@@ -169,12 +171,15 @@ const destinationLabels: Record<Destination, string> = {
   other: "其他",
 };
 const isDestination = (value: unknown): value is Destination => typeof value === "string" && value in destinationLabels;
+const isMembershipType = (value: unknown): value is MembershipType => value === "formal" || value === "probationary";
+const membershipLabels: Record<MembershipType, string> = { formal: "正式组员", probationary: "预备组员" };
+const membershipLabel = (person: Person) => person.memberType ? membershipLabels[person.memberType] : "";
 const destinationLabel = (person: Person) => person.destination ? destinationLabels[person.destination] : "去向待补充";
 const destinationClass = (person: Person) => person.destination ? `destination-${person.destination}` : "destination-unset";
 const matchingIds = computed(() => {
   const text = query.value.trim().toLocaleLowerCase();
   if (!text) return new Set(people.value.map((person) => person.id));
-  return new Set(people.value.filter((person) => [person.name, person.nickname ?? "", person.role, formatCohort(person.cohort), person.status === "archived" ? "毕业" : "在读", person.destination ? destinationLabels[person.destination] : "", ...person.tags].join(" ").toLocaleLowerCase().includes(text)).map((person) => person.id));
+  return new Set(people.value.filter((person) => [person.name, person.nickname ?? "", person.role, formatCohort(person.cohort), person.status === "archived" ? "毕业" : "在读", person.memberType ? membershipLabels[person.memberType] : "", person.destination ? destinationLabels[person.destination] : "", ...person.tags].join(" ").toLocaleLowerCase().includes(text)).map((person) => person.id));
 });
 const detailRouteId = computed(() => {
   const match = pathname.value.match(/^\/person\/([^/]+)/);
@@ -183,8 +188,10 @@ const detailRouteId = computed(() => {
 });
 const isDetailRoute = computed(() => Boolean(detailRouteId.value));
 const isRegisterRoute = computed(() => pathname.value === "/register");
+const isClaimRoute = computed(() => pathname.value === "/claim");
 const isAdminRoute = computed(() => pathname.value === "/admin");
 const inviteToken = computed(() => new URLSearchParams(window.location.search).get("invite") ?? "");
+const claimToken = computed(() => new URLSearchParams(window.location.search).get("token") ?? "");
 const currentDetail = computed(() => detailRouteId.value ? people.value.find((person) => person.id === detailRouteId.value) ?? null : null);
 const detail = computed(() => detailPerson.value ?? currentDetail.value);
 const isOwnDetail = computed(() => Boolean(detail.value && sessionUser.value?.personId === detail.value.id));
@@ -203,17 +210,33 @@ const detailStudents = computed(() => {
 });
 const detailAchievements = computed(() => detail.value?.achievements ?? []);
 const detailAttachments = computed(() => detail.value?.attachments ?? []);
+const profileFileAttachments = computed(() => detailAttachments.value.filter((item) => item.category !== "avatar"));
 const uploadCards: Array<{ category: UploadCategory; title: string; description: string; accept: string }> = [
-  { category: "avatar", title: "头像", description: "用于星谱节点和个人页展示，支持 JPG、PNG、WebP。", accept: "image/jpeg,image/png,image/webp" },
   { category: "resume", title: "简历", description: "上传一份 PDF 简历，方便成员了解你的经历。", accept: "application/pdf" },
   { category: "photo", title: "照片", description: "记录旅途、活动或作品照片，支持 JPG、PNG、WebP。", accept: "image/jpeg,image/png,image/webp" },
   { category: "certificate", title: "证书 / 证明", description: "上传证书或证明材料，支持图片和 PDF。", accept: "image/jpeg,image/png,image/webp,application/pdf" },
 ];
 const attachmentsFor = (category: UploadCategory) => detailAttachments.value.filter((item) => item.category === category);
+const hasAvatar = computed(() => Boolean(detail.value?.avatarUrl));
+const showRecordsSection = computed(() => Boolean(detailAchievements.value.length || profileFileAttachments.value.length || (isOwnDetail.value && profileEditing.value)));
 const visibleLinks = computed(() => links.value.filter((link) => !query.value || matchingIds.value.has(link.mentorId) || matchingIds.value.has(link.studentId)));
 const isVisible = (person: Person) => matchingIds.value.has(person.id);
 const relationLabel = (person: Person) => person.status === "archived" ? "毕业" : "在读";
 const toneOf = (person: Person): Tone => person.status === "archived" ? "fog" : person.isFeatured || person.id === rootPerson.value?.id ? "gold" : "aqua";
+
+const detailSectionNumber = (section: "bio" | "education" | "experience" | "skills" | "links" | "contact" | "relation" | "joined" | "attachments") => {
+  const person = detail.value;
+  const sections: string[] = ["bio"];
+  if (person?.education) sections.push("education");
+  if (person?.experience) sections.push("experience");
+  if (person?.skills?.length) sections.push("skills");
+  if (person?.links?.length) sections.push("links");
+  if (person?.contactEmail) sections.push("contact");
+  sections.push("relation", "joined");
+  if (showRecordsSection.value) sections.push("attachments");
+  const index = sections.indexOf(section);
+  return String(index >= 0 ? index + 1 : sections.length).padStart(2, "0");
+};
 const isLinkActive = (link: LinkSegment) => hoveredId.value !== null && (link.mentorId === hoveredId.value || link.studentId === hoveredId.value);
 
 function setNodeRef(id: string, element: Element | null) {
@@ -224,20 +247,22 @@ function normaliseNode(node: Record<string, unknown>): Person {
   if (typeof node.id !== "string" || !node.id.trim() || typeof node.name !== "string" || !node.name.trim()) throw new Error("invalid person");
   const source = {
     id: node.id, name: node.name, nickname: null, avatarUrl: null,
-    cohort: null, relationScope: "cohort_guest" as const, isFeatured: false, status: "active" as const, destination: null,
+    cohort: null, relationScope: "cohort_guest" as const, isFeatured: false, status: "active" as const, memberType: null, destination: null,
     mentorId: null, depth: null, directStudentIds: [], role: "星谱成员", joinedAt: "", tags: [], bio: "",
   };
   const rawCohort = node.cohort as Partial<Cohort> | null | undefined;
   const fallbackCohort = source.cohort;
   const rawYear = rawCohort?.year ?? String(rawCohort?.label ?? "").match(/\d{4}/)?.[0];
   const year = rawYear ? Number(rawYear) : (fallbackCohort?.year ?? null);
-  const cohort = rawCohort || fallbackCohort ? { ...(fallbackCohort ?? {}), ...(rawCohort ?? {}), id: year ? `cohort-${year}` : String(rawCohort?.id ?? fallbackCohort?.id ?? "uncategorized"), label: year ? `${year} 届` : "未分届次", year, sortOrder: Number(rawCohort?.sortOrder ?? fallbackCohort?.sortOrder ?? 99) } as Cohort : null;
+  const cohort = rawCohort || fallbackCohort ? { ...(fallbackCohort ?? {}), ...(rawCohort ?? {}), id: year ? `cohort-${year}` : String(rawCohort?.id ?? fallbackCohort?.id ?? "uncategorized"), label: year ? `${year} 级` : "未分级", year, sortOrder: Number(rawCohort?.sortOrder ?? fallbackCohort?.sortOrder ?? 99) } as Cohort : null;
   const directStudentIds = Array.isArray(node.directStudentIds) ? node.directStudentIds.map(String) : source.directStudentIds;
   const destination = isDestination(node.destination) ? node.destination : null;
+  const rawMemberType = node.memberType;
+  const memberType = isMembershipType(rawMemberType) ? rawMemberType : rawMemberType === "正式组员" ? "formal" : rawMemberType === "预备组员" ? "probationary" : null;
   const nickname = Object.prototype.hasOwnProperty.call(node, "nickname") ? (node.nickname == null ? null : String(node.nickname)) : source.nickname;
   const skills = Array.isArray(node.skills) ? node.skills.filter((skill): skill is string => typeof skill === "string" && Boolean(skill.trim())) : [];
   const profileLinks = Array.isArray(node.links) ? node.links.filter((link): link is ProfileLink => Boolean(link && typeof link === "object" && typeof (link as ProfileLink).label === "string" && typeof (link as ProfileLink).url === "string")) : [];
-  return { ...source, ...node, id: source.id, name: source.name, cohort, destination, version: Number(node.version ?? 1), mentorId: node.mentorId == null ? null : String(node.mentorId), directStudentIds, nickname, avatarUrl: node.avatarUrl == null ? null : String(node.avatarUrl), role: String(node.role ?? source.role), joinedAt: String(node.joinedAt ?? ""), tags: Array.isArray(node.tags) ? node.tags.map(String) : [], bio: String(node.bio ?? ""), contactEmail: node.contactEmail == null ? null : String(node.contactEmail), education: node.education == null ? null : String(node.education), experience: node.experience == null ? null : String(node.experience), skills, links: profileLinks } as Person;
+  return { ...source, ...node, id: source.id, name: source.name, cohort, destination, memberType, version: Number(node.version ?? 1), mentorId: node.mentorId == null ? null : String(node.mentorId), directStudentIds, nickname, avatarUrl: node.avatarUrl == null ? null : String(node.avatarUrl), role: String(node.role ?? source.role), joinedAt: String(node.joinedAt ?? ""), tags: Array.isArray(node.tags) ? node.tags.map(String) : [], bio: String(node.bio ?? ""), contactEmail: node.contactEmail == null ? null : String(node.contactEmail), education: node.education == null ? null : String(node.education), experience: node.experience == null ? null : String(node.experience), skills, links: profileLinks } as Person;
 }
 async function loadTree() {
   loading.value = true;
@@ -344,7 +369,7 @@ function openMyProfile() {
 function startProfileEdit() {
   if (!detail.value || !isOwnDetail.value) return;
   profileForm.value = {
-    nickname: detail.value.nickname ?? "", bio: detail.value.bio, destination: detail.value.destination ?? "",
+    nickname: detail.value.nickname ?? "", bio: detail.value.bio, destination: detail.value.destination ?? "", memberType: detail.value.memberType ?? "",
     contactEmail: detail.value.contactEmail ?? "", education: detail.value.education ?? "", experience: detail.value.experience ?? "",
     skills: (detail.value.skills ?? []).join(", "), links: (detail.value.links ?? []).map((link) => `${link.label} | ${link.url}`).join("\n"),
   };
@@ -371,6 +396,7 @@ async function saveProfile() {
       body: JSON.stringify({
         nickname: profileForm.value.nickname.trim() || null,
         bio: profileForm.value.bio.trim(), destination: profileForm.value.destination || null,
+        memberType: profileForm.value.memberType || null,
         contactEmail: profileForm.value.contactEmail.trim() || null,
         education: profileForm.value.education.trim() || null, experience: profileForm.value.experience.trim() || null,
         skills: profileForm.value.skills.split(",").map((item) => item.trim()).filter(Boolean),
@@ -388,7 +414,7 @@ async function saveProfile() {
     if (!payload.data) throw new Error("资料响应为空");
     const updated = normaliseNode({ ...person, ...payload.data, id: person.id });
     detailPerson.value = updated;
-    tree.value.nodes = tree.value.nodes.map((node) => node.id === updated.id ? { ...node, nickname: updated.nickname, bio: updated.bio, destination: updated.destination, version: updated.version, contactEmail: updated.contactEmail, education: updated.education, experience: updated.experience, skills: updated.skills, links: updated.links } : node);
+    tree.value.nodes = tree.value.nodes.map((node) => node.id === updated.id ? { ...node, nickname: updated.nickname, bio: updated.bio, destination: updated.destination, memberType: updated.memberType, version: updated.version, contactEmail: updated.contactEmail, education: updated.education, experience: updated.experience, skills: updated.skills, links: updated.links } : node);
     profileEditing.value = false;
     profileSaved.value = true;
   } catch (error) {
@@ -420,7 +446,12 @@ async function uploadAttachment(event: Event, category: UploadCategory) {
     if (!response.ok) throw new Error(await apiErrorMessage(response, "附件上传失败"));
     const payload = await response.json() as { data?: Attachment };
     if (payload.data && detailPerson.value) {
-      detailPerson.value = { ...detailPerson.value, avatarUrl: category === "avatar" ? `/api/attachments/${payload.data.id}` : detailPerson.value.avatarUrl, resume: category === "resume" ? payload.data : detailPerson.value.resume, attachments: [payload.data, ...(detailPerson.value.attachments ?? [])] };
+      const nextAttachments = category === "avatar"
+        ? (detailPerson.value.attachments ?? [])
+        : category === "resume"
+          ? [payload.data, ...(detailPerson.value.attachments ?? []).filter((item) => item.category !== "resume")]
+          : [payload.data, ...(detailPerson.value.attachments ?? [])];
+      detailPerson.value = { ...detailPerson.value, avatarUrl: category === "avatar" ? `/api/attachments/${payload.data.id}` : detailPerson.value.avatarUrl, resume: category === "resume" ? payload.data : detailPerson.value.resume, attachments: nextAttachments };
       if (category === "avatar") tree.value.nodes = tree.value.nodes.map((node) => node.id === detailPerson.value?.id ? { ...node, avatarUrl: `/api/attachments/${payload.data!.id}` } : node);
     }
   } catch (error) { uploadError.value = error instanceof Error ? error.message : "附件上传失败"; }
@@ -523,7 +554,9 @@ async function openDetailById(id: string, localPerson?: Person) {
   detailError.value = null;
   detailPerson.value = fallback;
   try {
-    const response = await fetch(`/api/people/${encodeURIComponent(id)}`);
+    const response = await fetch(`/api/people/${encodeURIComponent(id)}`, {
+      headers: sessionToken.value ? { Authorization: `Bearer ${sessionToken.value}` } : {},
+    });
     if (!response.ok) throw new Error(response.status === 404 ? "档案不存在" : "档案暂时无法读取");
     const payload = await response.json() as { data?: Record<string, unknown> };
     if (!payload.data) throw new Error("档案数据为空");
@@ -645,8 +678,10 @@ onUnmounted(() => {
         <span class="brand-name">翻斗星谱<small>FANDOU LINEAGE</small></span>
       </a>
       <div class="header-meta">
-        <span class="status-dot" :class="{ offline: apiFailed }"></span>
-        <span>{{ apiFailed ? "星谱暂离线" : "星谱已连接" }}</span>
+        <template v-if="apiFailed">
+          <span class="status-dot offline"></span>
+          <span>星谱暂离线</span>
+        </template>
         <button class="account-entry" type="button" :disabled="sessionLoading" @click="openMyProfile">
           <span class="account-orb" aria-hidden="true"></span>
           {{ sessionLoading ? "读取账号" : (sessionUser?.displayName ?? "登录 / 加入") }}
@@ -659,6 +694,9 @@ onUnmounted(() => {
     <main v-if="isRegisterRoute" class="detail-page" aria-live="polite">
       <InviteRegistration :token="inviteToken" />
     </main>
+    <main v-else-if="isClaimRoute" class="detail-page" aria-live="polite">
+      <ClaimRegistration :token="claimToken" />
+    </main>
     <main v-else-if="isAdminRoute" class="detail-page" aria-live="polite">
       <AdminPanel v-if="sessionUser?.role === 'admin' && sessionToken" :session-token="sessionToken" @changed="loadTree" />
       <section v-else class="state-message" role="status"><p>管理员账号登录后才能打开维护工作台。</p><button type="button" @click="() => openAuth()">登录管理员账号</button></section>
@@ -669,7 +707,7 @@ onUnmounted(() => {
         <h1>让每颗星，<em>找到自己的轨道。</em></h1>
         <div class="hero-stats">
           <div><strong>{{ people.length }}</strong><span>颗星</span></div>
-          <div><strong>{{ groups.length }}</strong><span>条届次轨道</span></div>
+          <div><strong>{{ groups.length }}</strong><span>条级别轨道</span></div>
           <div><strong>{{ layout.generations }}</strong><span>代传承</span></div>
         </div>
       </section>
@@ -677,7 +715,7 @@ onUnmounted(() => {
       <section class="toolbar">
         <label class="search-field">
           <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4.5 4.5" /></svg>
-          <input v-model="query" type="search" placeholder="搜索姓名、方向、届次或去向" aria-label="搜索姓名、方向、届次或去向" />
+          <input v-model="query" type="search" placeholder="搜索姓名、方向、级别或去向" aria-label="搜索姓名、方向、级别或去向" />
           <button v-if="query" type="button" aria-label="清空搜索" @click="query = ''">×</button>
         </label>
         <div class="legend">
@@ -743,7 +781,7 @@ onUnmounted(() => {
                     :class="[destinationClass(person), { dimmed: query && !isVisible(person), highlighted: query && isVisible(person), root: person.id === rootPerson?.id, guest: person.relationScope === 'cohort_guest', selected: selectedPerson?.id === person.id }]"
                     :style="{ '--x': layout.offsets.get(person.id) ?? 0, '--delay': `${rowIndex * 140 + index * 60}ms` }"
                     type="button"
-                    :aria-label="`${person.name}，${formatCohort(person.cohort)}，${relationLabel(person)}${person.destination ? `，去向${destinationLabel(person)}` : ''}`"
+                    :aria-label="`${person.name}，${formatCohort(person.cohort)}，${relationLabel(person)}${person.memberType ? `，${membershipLabel(person)}` : ''}${person.destination ? `，去向${destinationLabel(person)}` : ''}`"
                     :aria-expanded="selectedPerson?.id === person.id"
                     @click="openPreview(person)"
                     @mouseenter="hoveredId = person.id"
@@ -770,7 +808,7 @@ onUnmounted(() => {
             :aria-label="`${selectedPerson.name}简介`"
           >
             <button class="popover-close" type="button" aria-label="关闭简介" @click="closePreview">×</button>
-            <span class="popover-kicker">{{ formatCohort(selectedPerson.cohort) }} · {{ relationLabel(selectedPerson) }}</span>
+            <span class="popover-kicker">{{ formatCohort(selectedPerson.cohort) }} · {{ relationLabel(selectedPerson) }}<template v-if="selectedPerson.memberType"> · {{ membershipLabel(selectedPerson) }}</template></span>
             <div class="popover-person">
               <StarAvatar :name="selectedPerson.name" :avatar-url="selectedPerson.avatarUrl" :tone="toneOf(selectedPerson)" size="sm" />
               <div>
@@ -778,7 +816,7 @@ onUnmounted(() => {
                 <p>{{ selectedPerson.role }}</p>
               </div>
             </div>
-            <p class="popover-copy">{{ selectedPerson.bio }}</p>
+            <p class="popover-copy">{{ selectedPerson.bio || "这颗星暂时保持神秘。" }}</p>
             <span v-if="selectedPerson.destination" class="destination-badge popover-destination" :class="destinationClass(selectedPerson)">去向 · {{ destinationLabel(selectedPerson) }}</span>
             <div class="tag-row compact"><span v-for="tag in selectedPerson.tags" :key="tag" class="tag">{{ tag }}</span></div>
             <button class="popover-detail" type="button" @click="viewDetail(selectedPerson)">查看完整档案 <span aria-hidden="true">↗</span></button>
@@ -799,6 +837,7 @@ onUnmounted(() => {
           <p v-if="detail.nickname" class="detail-nickname">{{ detail.nickname }}</p>
           <p class="detail-role">{{ detail.role }}</p>
           <span v-if="detail.destination" class="destination-badge detail-destination" :class="destinationClass(detail)">去向 · {{ destinationLabel(detail) }}</span>
+          <span v-if="detail.memberType" class="membership-badge" :class="`membership-${detail.memberType}`">{{ membershipLabel(detail) }}</span>
           <div class="tag-row"><span v-for="tag in detail.tags" :key="tag" class="tag">{{ tag }}</span></div>
           <span class="record-note" :class="{ graduated: detail.status === 'archived' }"><i></i>{{ relationLabel(detail) }}</span>
           <button v-if="isOwnDetail" class="profile-edit-trigger" type="button" @click="startProfileEdit">编辑我的资料</button>
@@ -814,7 +853,7 @@ onUnmounted(() => {
               </label>
               <label class="form-field">
                 <span>简介</span>
-                <textarea v-model="profileForm.bio" maxlength="10000" rows="5" required></textarea>
+                <textarea v-model="profileForm.bio" maxlength="10000" rows="5" placeholder="可留空"></textarea>
               </label>
               <label class="form-field">
                 <span>去向</span>
@@ -823,20 +862,42 @@ onUnmounted(() => {
                   <option v-for="(label, value) in destinationLabels" :key="value" :value="value">{{ label }}</option>
                 </select>
               </label>
-              <label class="form-field"><span>联系邮箱（仅本人和管理员可见）</span><input v-model="profileForm.contactEmail" type="email" maxlength="254" placeholder="可留空" /></label>
+              <label class="form-field">
+                <span>组员身份</span>
+                <select v-model="profileForm.memberType">
+                  <option value="">暂未标记</option>
+                  <option value="formal">正式组员</option>
+                  <option value="probationary">预备组员</option>
+                </select>
+              </label>
+              <label class="form-field"><span>联系邮箱（所有人可见）</span><input v-model="profileForm.contactEmail" type="email" maxlength="254" placeholder="可留空" /></label>
               <label class="form-field"><span>教育经历</span><textarea v-model="profileForm.education" maxlength="10000" rows="3" placeholder="学校、专业、研究方向等，可留空"></textarea></label>
               <label class="form-field"><span>工作 / 项目经历</span><textarea v-model="profileForm.experience" maxlength="20000" rows="4" placeholder="可留空"></textarea></label>
               <label class="form-field"><span>技能（用逗号分隔）</span><input v-model="profileForm.skills" maxlength="2400" placeholder="例如：产品设计，TypeScript，写作" /></label>
               <label class="form-field"><span>个人链接（每行：名称 | URL）</span><textarea v-model="profileForm.links" maxlength="10000" rows="3" placeholder="作品集 | https://example.com"></textarea></label>
+              <div class="profile-avatar-setting">
+                <div class="profile-avatar-preview">
+                  <StarAvatar :name="detail.name" :avatar-url="detail.avatarUrl" :tone="toneOf(detail)" size="lg" />
+                </div>
+                <div class="profile-avatar-copy">
+                  <span class="section-label">头像个性化</span>
+                  <h3>{{ hasAvatar ? "当前头像" : "设置你的头像" }}</h3>
+                  <p>头像会用于星谱节点和个人页展示，支持 JPG、PNG、WebP。</p>
+                  <label class="profile-upload-button profile-avatar-button">
+                    <span>{{ uploadSaving ? "处理中…" : (hasAvatar ? "更换头像" : "选择头像") }}</span>
+                    <input type="file" accept="image/jpeg,image/png,image/webp" :disabled="uploadSaving" @change="uploadAttachment($event, 'avatar')" />
+                  </label>
+                </div>
+              </div>
               <div class="profile-upload-panel">
                 <div class="profile-upload-heading">
-                  <div><span class="section-label">资料附件</span><p>每一类资料单独上传，上传后会立即出现在你的个人页。</p></div>
-                  <span class="profile-upload-count">{{ detailAttachments.length }} 份</span>
+                  <div><span class="section-label">资料文件</span><p>简历、照片和证明材料按类别单独管理，上传后会立即保存。</p></div>
+                  <span class="profile-upload-count">{{ profileFileAttachments.length }} 份文件</span>
                 </div>
                 <div class="profile-upload-grid">
                   <article v-for="card in uploadCards" :key="card.category" class="profile-upload-card" :class="`upload-${card.category}`">
                     <div class="profile-upload-card-top">
-                      <span class="upload-card-icon" aria-hidden="true">{{ card.category === 'avatar' ? '✦' : card.category === 'resume' ? '▤' : card.category === 'photo' ? '◌' : '◇' }}</span>
+                      <span class="upload-card-icon" aria-hidden="true">{{ card.category === 'resume' ? '▤' : card.category === 'photo' ? '◌' : '◇' }}</span>
                       <div><h3>{{ card.title }}</h3><p>{{ card.description }}</p></div>
                     </div>
                     <div v-if="attachmentsFor(card.category).length" class="profile-upload-current">
@@ -855,57 +916,57 @@ onUnmounted(() => {
               </div>
               <p v-if="profileError" class="form-error" role="alert">{{ profileError }}</p>
               <div class="form-actions">
-                <button class="secondary-command" type="button" :disabled="profileSaving" @click="cancelProfileEdit">取消</button>
+                <button class="secondary-command" type="button" :disabled="profileSaving" @click="cancelProfileEdit">结束编辑</button>
                 <button class="primary-command" type="submit" :disabled="profileSaving">{{ profileSaving ? "保存中" : "保存资料" }}</button>
               </div>
             </form>
           </article>
           <article class="detail-section">
-            <span class="section-label">01 / 简介</span>
+            <span class="section-label">{{ detailSectionNumber("bio") }} / 简介</span>
             <p v-if="detail.bio" class="detail-copy">{{ detail.bio }}</p>
             <div v-else class="empty-detail"><span>✦</span><p>这颗星还在积攒星尘，简介稍后回来。</p></div>
           </article>
-          <article v-if="detail.education" class="detail-section"><span class="section-label">02 / 教育经历</span><p class="detail-copy profile-preline">{{ detail.education }}</p></article>
-          <article v-if="detail.experience" class="detail-section"><span class="section-label">03 / 工作与项目</span><p class="detail-copy profile-preline">{{ detail.experience }}</p></article>
-          <article v-if="detail.skills?.length" class="detail-section"><span class="section-label">04 / 技能</span><div class="tag-row"><span v-for="skill in detail.skills" :key="skill" class="tag">{{ skill }}</span></div></article>
-          <article v-if="detail.links?.length" class="detail-section"><span class="section-label">05 / 个人链接</span><div class="profile-content-list"><a v-for="link in detail.links" :key="link.url" class="content-item attachment-item" :href="link.url" target="_blank" rel="noreferrer"><strong>{{ link.label }}</strong><p>{{ link.url }}</p></a></div></article>
-          <article v-if="detail.contactEmail" class="detail-section"><span class="section-label">06 / 联系方式</span><a class="content-item attachment-item" :href="`mailto:${detail.contactEmail}`">{{ detail.contactEmail }}</a></article>
+          <article v-if="detail.education" class="detail-section"><span class="section-label">{{ detailSectionNumber("education") }} / 教育经历</span><p class="detail-copy profile-preline">{{ detail.education }}</p></article>
+          <article v-if="detail.experience" class="detail-section"><span class="section-label">{{ detailSectionNumber("experience") }} / 工作与项目</span><p class="detail-copy profile-preline">{{ detail.experience }}</p></article>
+          <article v-if="detail.skills?.length" class="detail-section"><span class="section-label">{{ detailSectionNumber("skills") }} / 技能</span><div class="tag-row"><span v-for="skill in detail.skills" :key="skill" class="tag">{{ skill }}</span></div></article>
+          <article v-if="detail.links?.length" class="detail-section"><span class="section-label">{{ detailSectionNumber("links") }} / 个人链接</span><div class="profile-content-list"><a v-for="link in detail.links" :key="link.url" class="content-item attachment-item" :href="link.url" target="_blank" rel="noreferrer"><strong>{{ link.label }}</strong><p>{{ link.url }}</p></a></div></article>
+          <article v-if="detail.contactEmail" class="detail-section"><span class="section-label">{{ detailSectionNumber("contact") }} / 联系方式</span><a class="content-item attachment-item" :href="`mailto:${detail.contactEmail}`">{{ detail.contactEmail }}</a></article>
           <article class="detail-section split-section">
             <div>
-              <span class="section-label">07 / 关系</span>
+              <span class="section-label">{{ detailSectionNumber("relation") }} / 关系</span>
               <h2>{{ detailMentor ? "沿着一条主线继续" : "谱系起点" }}</h2>
-              <p>{{ detailMentor ? "这位成员从上一届连接而来，并把自己的经验继续传给下一位。" : "从这里出发，连接仍在发生。" }}</p>
+              <p>{{ detailMentor ? "这位成员从上一级连接而来，并把自己的经验继续传给下一位。" : "从这里出发，连接仍在发生。" }}</p>
               <button v-if="detailMentor" class="popover-detail" type="button" @click="viewDetail(detailMentor)">师傅：{{ detailMentor.name }} <span aria-hidden="true">↗</span></button>
               <p v-else class="relation-muted">暂无已记录的师傅</p>
               <div v-if="detailStudents.length" class="relation-students">
-                <span class="section-label">传给下一届</span>
+                <span class="section-label">传给下一级</span>
                 <button v-for="student in detailStudents" :key="student.id" class="popover-detail" type="button" @click="viewDetail(student)">学生：{{ student.name }} <span aria-hidden="true">↗</span></button>
               </div>
             </div>
             <div>
-              <span class="section-label">08 / 加入时间</span>
+              <span class="section-label">{{ detailSectionNumber("joined") }} / 加入时间</span>
               <h2>{{ detail.joinedAt }}</h2>
               <p>{{ formatCohort(detail.cohort) }}</p>
             </div>
           </article>
-          <article class="detail-section">
-            <span class="section-label">09 / 事迹与附件</span>
-            <div v-if="detailAchievements.length || detailAttachments.length" class="profile-content-list">
+          <article v-if="showRecordsSection" class="detail-section">
+            <span class="section-label">{{ detailSectionNumber("attachments") }} / 事迹与附件</span>
+            <div v-if="detailAchievements.length || profileFileAttachments.length" class="profile-content-list">
               <article v-for="item in detailAchievements" :key="item.id" class="content-item"><strong>{{ item.kind === 'honor' ? '荣誉' : '事迹' }} · {{ item.title }}</strong><p>{{ item.content }}</p></article>
-              <div v-for="item in detailAttachments" :key="item.id" class="content-item attachment-item">
+              <div v-for="item in profileFileAttachments" :key="item.id" class="content-item attachment-item">
                 <button class="attachment-open" type="button" :disabled="Boolean(attachmentBusyId)" @click="openAttachment(item)">{{ attachmentBusyId === item.id ? '处理中…' : '打开' }}</button>
                 <button class="attachment-open" type="button" :disabled="Boolean(attachmentBusyId)" @click="openAttachment(item, true)">下载</button>
-                <strong>{{ item.category === 'resume' ? '简历' : item.category === 'photo' ? '照片' : item.category === 'avatar' ? '头像' : '附件' }} · {{ item.originalName }}</strong> <span>· {{ item.visibility === 'private' ? '仅自己可见' : '成员可见' }}</span>
-                <button v-if="isOwnDetail && sessionToken" class="attachment-remove" type="button" :disabled="Boolean(attachmentBusyId)" @click="removeAttachment(item)">删除</button>
+                <strong>{{ item.category === 'resume' ? '简历' : item.category === 'photo' ? '照片' : '附件' }} · {{ item.originalName }}</strong> <span>· {{ item.visibility === 'private' ? '仅自己可见' : '成员可见' }}</span>
+                <button v-if="isOwnDetail && sessionToken && profileEditing" class="attachment-remove" type="button" :disabled="Boolean(attachmentBusyId)" @click="removeAttachment(item)">删除</button>
               </div>
             </div>
-            <div v-else class="empty-detail"><span>✦</span><p>星尘还没有留下记录，等一段故事抵达这里。</p></div>
-            <form v-if="isOwnDetail && sessionToken" class="content-editor" @submit.prevent="addAchievement">
+            <div v-else-if="isOwnDetail && profileEditing" class="empty-detail"><span>✦</span><p>这里还没有记录，可以从下方写下第一段经历。</p></div>
+            <form v-if="isOwnDetail && sessionToken && profileEditing" class="content-editor" @submit.prevent="addAchievement">
               <div class="content-editor-row"><select v-model="achievementForm.kind"><option value="achievement">事迹</option><option value="honor">荣誉</option></select><input v-model.trim="achievementForm.title" maxlength="200" placeholder="标题" required /></div>
               <textarea v-model.trim="achievementForm.content" maxlength="20000" rows="3" placeholder="写下这段经历" required></textarea>
               <div class="form-actions"><button class="primary-command" type="submit" :disabled="achievementSaving">{{ achievementSaving ? '保存中…' : '添加记录' }}</button></div>
-              <p v-if="attachmentError" class="form-error" role="alert">{{ attachmentError }}</p>
             </form>
+            <p v-if="attachmentError" class="form-error" role="alert">{{ attachmentError }}</p>
           </article>
           <InvitePanel v-if="isOwnDetail && sessionToken" :mentor-id="detail.id" :mentor-name="detail.name" :session-token="sessionToken" />
         </section>

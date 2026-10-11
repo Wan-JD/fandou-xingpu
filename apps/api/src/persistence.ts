@@ -24,6 +24,7 @@ type PersonRow = {
   bio: string;
   is_featured: number;
   status: "active" | "archived";
+  member_type: "formal" | "probationary";
   destination: Person["destination"];
   version: number;
   role: string;
@@ -75,6 +76,16 @@ type InviteRow = {
   accepted_person_id: string | null;
 };
 
+type ClaimRow = {
+  token_hash: string;
+  person_id: string;
+  created_by_user_id: string;
+  created_at: string;
+  expires_at: string;
+  claimed_at: string | null;
+  claimed_by_user_id: string | null;
+};
+
 export type PersistentInvite = {
   token: string;
   mentorId: string;
@@ -88,11 +99,23 @@ export type InviteInspection =
   | { state: "missing"; record: null }
   | { state: "expired" | "accepted" | "pending"; record: PersistentInvite };
 
+export type PersonClaim = {
+  token: string;
+  personId: string;
+  createdAt: string;
+  expiresAt: string;
+  claimedAt: string | null;
+};
+
+export type ClaimInspection =
+  | { state: "missing"; claim: null; person: null }
+  | { state: "expired" | "claimed" | "pending"; claim: PersonClaim; person: Person };
+
 export type ContentViewer = { userId?: string; personId?: string; role?: "member" | "admin" };
 
 const PERSON_SELECT = `
   SELECT p.id, p.name, p.nickname, p.mentor_id, p.relation_scope, p.bio,
-    p.is_featured, p.status, p.destination, p.version, p.role, p.joined_at,
+    p.is_featured, p.status, p.member_type, p.destination, p.version, p.role, p.joined_at,
     p.tags_json, p.created_at, p.updated_at,
     p.contact_email, p.education, p.experience, p.skills_json, p.links_json,
     c.id AS cohort_id, c.label AS cohort_label, c.year AS cohort_year,
@@ -137,10 +160,41 @@ function parseLinks(value: string | null | undefined) {
   }
 }
 
+const attachmentCategoryLabels: Record<string, string> = {
+  avatar: "头像",
+  resume: "简历",
+  photo: "照片",
+  certificate: "证书",
+  other: "附件",
+};
+
+const attachmentMimeExtensions: Record<string, string> = {
+  "application/pdf": ".pdf",
+  "image/jpeg": ".jpg",
+  "image/png": ".png",
+  "image/webp": ".webp",
+};
+
+function safeAttachmentPersonName(value: string | null | undefined) {
+  return (value ?? "星谱成员").replace(/[\\/:*?\"<>|]/g, "").trim() || "星谱成员";
+}
+
+function attachmentExtension(originalName: string | null | undefined, mimeType: string) {
+  return (originalName?.match(/(\.[A-Za-z0-9]{1,12})$/)?.[1] ?? attachmentMimeExtensions[mimeType] ?? "").toLowerCase();
+}
+
+function normalizedAttachmentName(personName: string | null | undefined, category: string, originalName: string | null | undefined, mimeType: string, id: string, createdAt?: string | null) {
+  const label = attachmentCategoryLabels[category] ?? "附件";
+  const extension = attachmentExtension(originalName, mimeType);
+  const date = createdAt?.slice(0, 10).replace(/-/g, "") ?? new Date().toISOString().slice(0, 10).replace(/-/g, "");
+  const suffix = category === "photo" || category === "certificate" || category === "other" ? `-${date}-${id.slice(-4)}` : "";
+  return `${safeAttachmentPersonName(personName)}${label}${suffix}${extension}`;
+}
+
 function mapPerson(row: PersonRow): StoredPerson {
   const cohort = row.cohort_id ? {
     id: row.cohort_id,
-    name: row.cohort_label ?? "未分届次",
+    name: row.cohort_label ?? "未分级",
     year: row.cohort_year ?? 0,
     memberCount: 0,
     description: row.cohort_description ?? "",
@@ -152,9 +206,10 @@ function mapPerson(row: PersonRow): StoredPerson {
       nickname: row.nickname,
       avatarUrl: row.avatar_attachment_id ? `/api/attachments/${row.avatar_attachment_id}` : null,
       role: row.role,
-      generation: cohort?.name ?? "未分届次",
+      generation: cohort?.name ?? "未分级",
       joinedAt: row.joined_at ?? row.created_at.slice(0, 10),
       status: row.status,
+      memberType: row.member_type,
       destination: row.destination,
       tags: parseTags(row.tags_json),
       relationScope: row.relation_scope,
@@ -186,6 +241,7 @@ function toSummary(record: StoredPerson) {
     relationScope: person.relationScope,
     isFeatured: person.isFeatured,
     status: person.status,
+    memberType: person.memberType,
     destination: person.destination,
   };
 }
@@ -252,6 +308,7 @@ export class D1Persistence {
       role: record.person.role,
       generation: record.person.generation,
       joinedAt: record.person.joinedAt,
+      mentorId: record.person.mentorId,
       tags: record.person.tags,
       mentor: mentor ? toSummary(mentor) : null,
       students: students.map(toSummary),
@@ -264,7 +321,8 @@ export class D1Persistence {
       resume: (await this.attachments(id, viewer)).find((item) => item.category === "resume") ?? null,
       achievements: viewer && (viewer.role === "admin" || viewer.personId === id) ? await this.achievements(id) : [],
       attachments: await this.attachments(id, viewer),
-      contactEmail: viewer && (viewer.role === "admin" || viewer.personId === id) ? record.person.contactEmail : null,
+      // 联系邮箱属于个人资料的一部分，和简介/教育经历一样对所有访客展示。
+      contactEmail: record.person.contactEmail,
       version: record.version,
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
@@ -305,28 +363,53 @@ export class D1Persistence {
     return (result.meta.changes ?? 0) > 0;
   }
 
-  async attachments(personId: string, viewer?: ContentViewer) {
+  async attachments(personId: string, viewer?: ContentViewer): Promise<Array<{
+    id: string; personId: string; achievementId: string | null; originalName: string; mimeType: string;
+    size: number; category: string; visibility: string; status: string; url: string | null; createdAt: string; updatedAt: string;
+  }>> {
     const canViewMembers = Boolean(viewer?.userId);
     const canViewPrivate = viewer?.role === "admin" || viewer?.personId === personId;
+    const person = await this.db.prepare("SELECT name FROM people WHERE id = ?").bind(personId).first<{ name: string }>();
     const result = await this.db.prepare(`SELECT id, person_id AS personId, achievement_id AS achievementId, original_name AS originalName,
       mime_type AS mimeType, size, category, visibility, status, NULL AS url, created_at AS createdAt, updated_at AS updatedAt
-      FROM attachments WHERE person_id = ? AND status = 'ready' AND (category = 'avatar' OR (visibility = 'members' AND ? = 1) OR (visibility = 'private' AND ? = 1)) ORDER BY created_at DESC`).bind(personId, canViewMembers ? 1 : 0, canViewPrivate ? 1 : 0).all();
-    return result.results;
+      FROM attachments WHERE person_id = ? AND status = 'ready' AND category <> 'avatar' AND ((visibility = 'members' AND ? = 1) OR (visibility = 'private' AND ? = 1)) ORDER BY created_at DESC`).bind(personId, canViewMembers ? 1 : 0, canViewPrivate ? 1 : 0).all<{
+        id: string; personId: string; achievementId: string | null; originalName: string; mimeType: string;
+        size: number; category: string; visibility: string; status: string; url: string | null; createdAt: string; updatedAt: string;
+      }>();
+    return result.results.map((item) => ({ ...item, originalName: normalizedAttachmentName(person?.name, String(item.category), String(item.originalName), String(item.mimeType), String(item.id), String(item.createdAt)) }));
   }
 
   async attachment(id: string) {
-    return this.db.prepare("SELECT id, person_id AS personId, object_key AS objectKey, original_name AS originalName, mime_type AS mimeType, size, category, visibility, status FROM attachments WHERE id = ?")
-      .bind(id).first<{ id: string; personId: string; objectKey: string; originalName: string; mimeType: string; size: number; category: string; visibility: string; status: string }>();
+    const row = await this.db.prepare(`SELECT a.id, a.person_id AS personId, a.object_key AS objectKey, a.original_name AS originalName,
+      a.mime_type AS mimeType, a.size, a.category, a.visibility, a.status, a.created_at AS createdAt, p.name AS personName
+      FROM attachments a JOIN people p ON p.id = a.person_id WHERE a.id = ?`).bind(id).first<{
+        id: string; personId: string; objectKey: string; originalName: string; mimeType: string; size: number;
+        category: string; visibility: string; status: string; createdAt: string; personName: string;
+      }>();
+    if (!row) return null;
+    return { ...row, originalName: normalizedAttachmentName(row.personName, row.category, row.originalName, row.mimeType, row.id, row.createdAt) };
   }
 
   async addAttachment(personId: string, file: File, category: string, visibility: string, files: R2Bucket) {
     const id = `attachment-${crypto.randomUUID()}`;
     const objectKey = `people/${personId}/${id}`;
     const body = await file.arrayBuffer();
+    const person = await this.db.prepare("SELECT name FROM people WHERE id = ?").bind(personId).first<{ name: string }>();
+    const displayName = normalizedAttachmentName(person?.name, category, file.name, file.type, id);
     await files.put(objectKey, body, { httpMetadata: { contentType: file.type } });
     try {
-      await this.db.prepare(`INSERT INTO attachments (id, person_id, object_key, original_name, mime_type, size, category, visibility, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ready')`).bind(id, personId, objectKey, file.name, file.type, body.byteLength, category, visibility).run();
+      const previous = category === "avatar" || category === "resume"
+        ? await this.db.prepare("SELECT id, object_key AS objectKey FROM attachments WHERE person_id = ? AND category = ? AND status = 'ready'")
+          .bind(personId, category).all<{ id: string; objectKey: string }>()
+        : { results: [] as { id: string; objectKey: string }[] };
+      const statements: D1PreparedStatement[] = [];
+      if (category === "avatar" || category === "resume") {
+        statements.push(this.db.prepare("UPDATE attachments SET status = 'deleted', updated_at = datetime('now') WHERE person_id = ? AND category = ? AND status = 'ready'").bind(personId, category));
+      }
+      statements.push(this.db.prepare(`INSERT INTO attachments (id, person_id, object_key, original_name, mime_type, size, category, visibility, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ready')`).bind(id, personId, objectKey, displayName, file.type, body.byteLength, category, visibility));
+      await this.db.batch(statements);
+      await Promise.all(previous.results.map((item) => files.delete(item.objectKey).catch(() => undefined)));
     } catch (error) {
       await files.delete(objectKey);
       throw error;
@@ -456,7 +539,7 @@ export class D1Persistence {
       this.db.prepare(`
         INSERT INTO cohorts (id, label, year, sort_order, description)
         VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING
-      `).bind(cohortId, `${year}届`, year, year - 2019, `${year} 届成员。`),
+      `).bind(cohortId, `${year}级`, year, year - 2019, `${year} 级成员。`),
       this.db.prepare(`
         INSERT INTO people (
           id, name, nickname, mentor_id, cohort_id, relation_scope, bio,
@@ -536,12 +619,13 @@ export class D1Persistence {
     return (result.meta.changes ?? 0) > 0;
   }
 
-  async updateProfile(personId: string, input: { version: number; nickname?: string | null; bio?: string; destination?: Person["destination"]; contactEmail?: string | null; education?: string | null; experience?: string | null; skills?: string[]; links?: { label: string; url: string }[] }) {
+  async updateProfile(personId: string, input: { version: number; nickname?: string | null; bio?: string; destination?: Person["destination"]; memberType?: Person["memberType"] | null; contactEmail?: string | null; education?: string | null; experience?: string | null; skills?: string[]; links?: { label: string; url: string }[] }) {
     const assignments: string[] = [];
     const values: unknown[] = [];
     if ("nickname" in input) { assignments.push("nickname = ?"); values.push(input.nickname ?? null); }
     if (input.bio !== undefined) { assignments.push("bio = ?"); values.push(input.bio); }
     if ("destination" in input) { assignments.push("destination = ?"); values.push(input.destination ?? null); }
+    if ("memberType" in input) { assignments.push("member_type = ?"); values.push(input.memberType ?? "formal"); }
     if ("contactEmail" in input) { assignments.push("contact_email = ?"); values.push(input.contactEmail ?? null); }
     if ("education" in input) { assignments.push("education = ?"); values.push(input.education ?? null); }
     if ("experience" in input) { assignments.push("experience = ?"); values.push(input.experience ?? null); }
@@ -564,6 +648,145 @@ export class D1Persistence {
       VALUES (?, ?, ?, ?, ?)
     `).bind(tokenHash, mentorId, createdByUserId, expiresAt, createdAt).run();
     return { token, mentorId, createdAt, expiresAt, acceptedAt: null, acceptedBy: null } satisfies PersistentInvite;
+  }
+
+  async createPlaceholder(mentorId: string, createdByUserId: string, input: {
+    name: string;
+    nickname: string | null;
+    cohortId: string | null;
+    memberType: "formal" | "probationary";
+    joinedAt: string | null;
+  }, now = Date.now(), ttlMs = 30 * 24 * 60 * 60 * 1000) {
+    const mentor = await this.db.prepare("SELECT id, relation_scope FROM people WHERE id = ?")
+      .bind(mentorId).first<{ id: string; relation_scope: string }>();
+    if (!mentor) return { state: "mentor-not-found" } as const;
+    if (mentor.relation_scope !== "lineage") return { state: "mentor-not-lineage" } as const;
+    if (input.cohortId) {
+      const cohort = await this.db.prepare("SELECT id FROM cohorts WHERE id = ?").bind(input.cohortId).first();
+      if (!cohort) return { state: "cohort-not-found" } as const;
+    }
+    const personId = `placeholder-${crypto.randomUUID().replace(/-/g, "").slice(0, 20)}`;
+    const token = createOpaqueToken("claim");
+    const tokenHash = await hashToken(token);
+    const createdAt = new Date(now).toISOString();
+    const expiresAt = new Date(now + ttlMs).toISOString();
+    await this.db.batch([
+      this.db.prepare(`
+        INSERT INTO people (
+          id, name, nickname, mentor_id, cohort_id, relation_scope, bio,
+          is_featured, status, member_type, role, joined_at, tags_json
+        ) VALUES (?, ?, ?, ?, ?, 'lineage', ?, 0, 'active', ?, '待认领成员', ?, '[]')
+      `).bind(personId, input.name, input.nickname, mentorId, input.cohortId,
+        "这个节点由师傅代为保留，等待本人认领。", input.memberType, input.joinedAt),
+      this.db.prepare(`
+        INSERT INTO person_claims (token_hash, person_id, created_by_user_id, expires_at, created_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).bind(tokenHash, personId, createdByUserId, expiresAt, createdAt),
+    ]);
+    const person = await this.personDetail(personId);
+    return { state: "created", token, personId, createdAt, expiresAt, person } as const;
+  }
+
+  async listPlaceholders(mentorId: string) {
+    const rows = await this.db.prepare(`
+      SELECT c.token_hash, c.person_id, c.created_at, c.expires_at, c.claimed_at,
+        p.name, p.nickname, p.member_type, p.status, p.cohort_id,
+        co.label AS cohort_label, co.year AS cohort_year
+      FROM person_claims c
+      JOIN people p ON p.id = c.person_id
+      LEFT JOIN cohorts co ON co.id = p.cohort_id
+      WHERE p.mentor_id = ?
+      ORDER BY c.created_at DESC
+    `).bind(mentorId).all<ClaimRow & { name: string; nickname: string | null; member_type: string; status: string; cohort_id: string | null; cohort_label: string | null; cohort_year: number | null }>();
+    return rows.results.map((row) => ({
+      personId: row.person_id,
+      name: row.name,
+      nickname: row.nickname,
+      memberType: row.member_type,
+      status: row.status,
+      cohort: row.cohort_id ? { id: row.cohort_id, label: row.cohort_label ?? "未分级", year: row.cohort_year } : null,
+      createdAt: row.created_at,
+      expiresAt: row.expires_at,
+      claimedAt: row.claimed_at,
+      state: row.claimed_at ? "claimed" : Date.parse(row.expires_at) <= Date.now() ? "expired" : "pending",
+    }));
+  }
+
+  async rotatePlaceholderClaim(mentorId: string, personId: string, now = Date.now(), ttlMs = 30 * 24 * 60 * 60 * 1000) {
+    const row = await this.db.prepare(`
+      SELECT c.token_hash, c.claimed_at
+      FROM person_claims c JOIN people p ON p.id = c.person_id
+      WHERE c.person_id = ? AND p.mentor_id = ?
+    `).bind(personId, mentorId).first<{ token_hash: string; claimed_at: string | null }>();
+    if (!row) return { state: "not-found" } as const;
+    if (row.claimed_at) return { state: "claimed" } as const;
+    const token = createOpaqueToken("claim");
+    const tokenHash = await hashToken(token);
+    const expiresAt = new Date(now + ttlMs).toISOString();
+    const result = await this.db.prepare(`UPDATE person_claims SET token_hash = ?, expires_at = ?, created_at = ?, claimed_at = NULL, claimed_by_user_id = NULL WHERE token_hash = ? AND claimed_at IS NULL`)
+      .bind(tokenHash, expiresAt, new Date(now).toISOString(), row.token_hash).run();
+    if ((result.meta.changes ?? 0) === 0) return { state: "claimed" } as const;
+    return { state: "rotated", token, expiresAt } as const;
+  }
+
+  async inspectClaim(token: string, now = Date.now()): Promise<ClaimInspection> {
+    const row = await this.db.prepare(`
+      SELECT token_hash, person_id, created_by_user_id, created_at, expires_at, claimed_at, claimed_by_user_id
+      FROM person_claims WHERE token_hash = ?
+    `).bind(await hashToken(token)).first<ClaimRow>();
+    if (!row) return { state: "missing", claim: null, person: null };
+    const record: PersonClaim = { token, personId: row.person_id, createdAt: row.created_at, expiresAt: row.expires_at, claimedAt: row.claimed_at };
+    const person = await this.personDetail(row.person_id);
+    if (!person) return { state: "missing", claim: null, person: null };
+    if (row.claimed_at) return { state: "claimed", claim: record, person };
+    if (Date.parse(row.expires_at) <= now) return { state: "expired", claim: record, person };
+    return { state: "pending", claim: record, person };
+  }
+
+  async claimPlaceholder(token: string, input: { name?: string; nickname?: string | null; email: string; password: string }, now = Date.now()) {
+    const inspected = await this.inspectClaim(token, now);
+    if (inspected.state !== "pending") return { state: inspected.state, claim: inspected.claim, person: inspected.person, session: null } as const;
+    const email = normalizeEmail(input.email);
+    const existing = await this.db.prepare("SELECT id FROM users WHERE lower(email) = ? OR person_id = ?")
+      .bind(email, inspected.claim.personId).first<{ id: string }>();
+    if (existing) return { state: "email-conflict", claim: inspected.claim, person: inspected.person, session: null } as const;
+    const accountId = `account-${crypto.randomUUID()}`;
+    const credentials = await createPasswordFields(input.password);
+    const sessionToken = createOpaqueToken("session");
+    const sessionTokenHash = await hashToken(sessionToken);
+    const claimTokenHash = await hashToken(token);
+    const expiresAt = new Date(now + SESSION_TTL_MS).toISOString();
+    const displayName = input.name?.trim() || inspected.person.name;
+    const nickname = input.nickname === undefined ? inspected.person.nickname : input.nickname;
+    const claimedAt = new Date(now).toISOString();
+    const claimResult = await this.db.prepare(`UPDATE person_claims SET claimed_at = ?, claimed_by_user_id = ?
+      WHERE token_hash = ? AND claimed_at IS NULL AND expires_at > ?`)
+      .bind(claimedAt, accountId, claimTokenHash, claimedAt).run();
+    if ((claimResult.meta.changes ?? 0) === 0) {
+      return { state: "claimed", claim: inspected.claim, person: inspected.person, session: null } as const;
+    }
+    try {
+      await this.db.batch([
+        this.db.prepare(`UPDATE people SET name = ?, nickname = ?, role = '星谱成员', version = version + 1, updated_at = datetime('now') WHERE id = ?`)
+          .bind(displayName, nickname, inspected.claim.personId),
+        this.db.prepare(`INSERT INTO users (id, person_id, role, status, email, display_name, password_salt, password_hash)
+          VALUES (?, ?, 'member', 'active', ?, ?, ?, ?)`)
+          .bind(accountId, inspected.claim.personId, email, displayName, credentials.passwordSalt, credentials.passwordHash),
+        this.db.prepare("INSERT INTO auth_sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)")
+          .bind(sessionTokenHash, accountId, expiresAt),
+      ]);
+    } catch (error) {
+      await this.db.prepare("UPDATE person_claims SET claimed_at = NULL, claimed_by_user_id = NULL WHERE token_hash = ? AND claimed_by_user_id = ?")
+        .bind(claimTokenHash, accountId).run();
+      if (String(error).toLocaleLowerCase().includes("unique")) return { state: "email-conflict", claim: inspected.claim, person: inspected.person, session: null } as const;
+      throw error;
+    }
+    const account: AccountRow = {
+      id: accountId, email, display_name: displayName, person_id: inspected.claim.personId,
+      role: "member", password_salt: credentials.passwordSalt, password_hash: credentials.passwordHash,
+    };
+    const profile = await this.personDetail(inspected.claim.personId);
+    return { state: "claimed-now", claim: { ...inspected.claim, claimedAt }, person: profile, session: { token: sessionToken, expiresAt, user: publicUser(account) } satisfies Session } as const;
   }
 
   async inspectInvite(token: string, now = Date.now()): Promise<InviteInspection> {

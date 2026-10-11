@@ -2,6 +2,7 @@ export type Id = string;
 
 export type RelationScope = "lineage" | "cohort_guest";
 export type PersonStatus = "active" | "archived";
+export type MemberType = "formal" | "probationary";
 export type Destination = "big_tech" | "postgraduate_985" | "postgraduate_211" | "startup" | "further_study" | "other";
 export type DatePrecision = "year" | "month" | "day";
 export type AchievementKind = "achievement" | "honor";
@@ -24,6 +25,7 @@ export interface PersonSummary {
   relationScope: RelationScope;
   isFeatured: boolean;
   status: PersonStatus;
+  memberType: MemberType;
   destination: Destination | null;
 }
 

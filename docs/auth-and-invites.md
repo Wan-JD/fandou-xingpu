@@ -1,14 +1,16 @@
 # 账号、资料与邀请
 
-当前版本已经把成员加入流程收敛为“师傅邀请 → 一次性邀请码注册 → 自动建立师徒关系”。公开星谱仍可只读浏览，但新成员不能绕过邀请直接注册。
+当前版本支持两条安全加入路径：师傅邀请 → 一次性邀请码注册，或师傅先代建节点 → 一次性认领链接 → 徒弟绑定账号。公开星谱仍可只读浏览，但新成员不能绕过邀请或认领凭据直接注册。
 
 ## 使用流程
 
 1. 师傅使用已经存在的数据库成员账号登录。仓库不内置样例账号或管理员。
 2. 打开自己的个人详情，点击“生成邀请链接”，把链接或其中的邀请码发给徒弟。
 3. 徒弟打开 `/register?invite=<token>`，也可以直接访问 `/register` 后手动粘贴邀请码。
-4. 邀请页展示师傅届次和姓名。提交姓名、昵称、邮箱和密码后，账号、人物档案和 mentor 关系一起创建。
+4. 邀请页展示师傅级别和姓名。提交姓名、昵称、邮箱和密码后，账号、人物档案和 mentor 关系一起创建。
 5. 邀请成功消费后不能再次使用；过期、重复提交、邮箱冲突和并发接受都会被拒绝。
+
+如果徒弟暂时不愿登记，师傅可以在自己的个人页创建“挂名节点”，选择届次和正式/预备身份。创建响应只显示一次认领链接；链接默认 30 天有效，师傅可以在节点仍未认领时重新生成链接，旧链接立即失效。徒弟打开 `/claim?token=<token>` 后填写邮箱和密码，系统会把已有节点绑定到新账号，不会重复创建人物。认领后师傅不能登录或代管该账号。
 
 ## API
 
@@ -21,6 +23,11 @@
 - `POST /api/invites`：登录后为当前人物生成 7 天有效的一次性邀请。
 - `GET /api/invites/:token`：预览邀请码状态和师傅摘要。
 - `POST /api/invites/:token/accept`：提交注册资料，原子创建账号、人物和师徒关系。
+- `POST /api/me/placeholder-students`：师傅创建待认领徒弟节点并生成一次性认领链接。
+- `GET /api/me/placeholder-students`：查看自己创建的挂名节点状态，不返回历史明文密钥。
+- `POST /api/me/placeholder-students/:personId/claim`：为尚未认领的节点重新生成链接，旧链接立即失效。
+- `GET /api/claims/:token`：查看待认领节点摘要。
+- `POST /api/claims/:token/accept`：绑定邮箱和密码，原子消费认领链接并创建账号。
 
 ## 存储
 
@@ -34,7 +41,7 @@ pnpm db:bootstrap:local
 pnpm dev
 ```
 
-本地 D1 使用 `database/migrations/0003_auth_and_persistence.sql` 保存账号哈希、会话过期时间、邀请 token 哈希和人物资料；`0007` 清理历史 fixture 并移除历史账号标记。密码使用 PBKDF2-SHA256 派生（100,000 次迭代，兼容 Cloudflare Workers WebCrypto），数据库只保存 salt 与 hash；会话和邀请码只保存 hash，明文 token 只在创建响应中返回。
+本地 D1 使用 `database/migrations/0003_auth_and_persistence.sql` 保存账号哈希、会话过期时间、邀请 token 哈希和人物资料；`0007` 清理历史 fixture 并移除历史账号标记，`0008` 增加正式/预备身份和待认领节点。密码使用 PBKDF2-SHA256 派生（100,000 次迭代，兼容 Cloudflare Workers WebCrypto），数据库只保存 salt 与 hash；会话、邀请码和认领密钥只保存 SHA-256 hash，明文 token 只在创建响应中返回一次。
 
 受保护接口读取 `Authorization: Bearer <token>`；前端将明文 token 保存在本地会话存储中，D1 只保存 SHA-256 hash。当前实现没有 Cookie 或 CSRF 机制，因此正式站必须使用 HTTPS，并用精确 `ALLOWED_ORIGIN` 限制跨域来源。
 

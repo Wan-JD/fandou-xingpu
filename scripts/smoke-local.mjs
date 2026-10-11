@@ -87,6 +87,26 @@ const accountCreated = await request("/api/admin/accounts", { token: admin.token
 assert.equal(accountCreated.response.status, 201, JSON.stringify(accountCreated.payload));
 const memberSession = await login(accountEmail, accountPassword);
 
+const placeholder = await request("/api/me/placeholder-students", { token: memberSession.token, method: "POST", body: {
+  name: `待认领 ${runId}`, nickname: "挂名节点", memberType: "probationary", cohortId,
+} });
+assert.equal(placeholder.response.status, 201, JSON.stringify(placeholder.payload));
+assert.match(placeholder.payload.data.claimPath, /^\/claim\?token=claim_/);
+const originalClaimToken = encodeURIComponent(placeholder.payload.data.claimToken);
+const rotatedClaim = await request(`/api/me/placeholder-students/${encodeURIComponent(placeholder.payload.data.person.id)}/claim`, { token: memberSession.token, method: "POST" });
+assert.equal(rotatedClaim.response.status, 200, JSON.stringify(rotatedClaim.payload));
+assert.equal((await request(`/api/claims/${originalClaimToken}`)).response.status, 404);
+const claimToken = encodeURIComponent(rotatedClaim.payload.data.claimToken);
+assert.equal((await request(`/api/claims/${claimToken}`)).response.status, 200);
+const claimedEmail = `claimed-${runId}@example.com`;
+const claimBody = { name: `认领成员 ${runId}`, email: claimedEmail, password: "claimed-password" };
+const concurrentClaims = await Promise.all([
+  request(`/api/claims/${claimToken}/accept`, { method: "POST", body: claimBody }),
+  request(`/api/claims/${claimToken}/accept`, { method: "POST", body: { ...claimBody, email: `claimed-race-${runId}@example.com` } }),
+]);
+assert.deepEqual(concurrentClaims.map(({ response }) => response.status).sort(), [201, 409]);
+assert.equal((await request(`/api/claims/${claimToken}/accept`, { method: "POST", body: { ...claimBody, email: `claimed-again-${runId}@example.com` } })).response.status, 409);
+
 const ownerInvite = await request("/api/invites", { token: memberSession.token, method: "POST", body: { mentorId: parentId } });
 assert.equal(ownerInvite.response.status, 201, JSON.stringify(ownerInvite.payload));
 assert.equal(ownerInvite.payload.data.mentor.id, childId, "invite must bind to current session person");
@@ -128,7 +148,7 @@ assert.ok(publicNode);
 assert.equal(Object.prototype.hasOwnProperty.call(publicNode, "contactEmail"), false);
 const publicDetail = await request(`/api/people/${childId}`);
 assert.equal(publicDetail.response.status, 200);
-assert.equal(publicDetail.payload.data.contactEmail, null);
+assert.equal(publicDetail.payload.data.contactEmail, `contact-${runId}@example.com`);
 const ownerDetail = await request(`/api/people/${childId}`, { token: memberSession.token });
 assert.equal(ownerDetail.payload.data.contactEmail, `contact-${runId}@example.com`);
 const clearedProfile = await request("/api/me/profile", { token: memberSession.token, method: "PATCH", body: {
@@ -157,7 +177,11 @@ assert.equal((await requestMultipart("/api/me/attachments", { token: memberSessi
 const uploadedAvatar = await requestMultipart("/api/me/attachments", { token: memberSession.token, method: "POST", form: avatarForm });
 assert.equal(uploadedAvatar.response.status, 201, JSON.stringify(uploadedAvatar.payload));
 const avatarId = uploadedAvatar.payload.data.id;
-assert.equal((await request(`/api/people/${childId}`, { token: memberSession.token })).payload.data.avatarUrl, `/api/attachments/${avatarId}`);
+const ownerAfterAvatar = await request(`/api/people/${childId}`, { token: memberSession.token });
+assert.equal(ownerAfterAvatar.payload.data.avatarUrl, `/api/attachments/${avatarId}`);
+assert.equal(ownerAfterAvatar.payload.data.attachments.some((item) => item.category === "avatar"), false, "avatar is a profile setting, not a listed attachment");
+const anonymousAfterAvatar = await request(`/api/people/${childId}`);
+assert.equal(anonymousAfterAvatar.payload.data.attachments.some((item) => item.category === "avatar"), false, "avatar is never exposed in attachment listings");
 
 const resumeForm = new FormData();
 resumeForm.append("file", new Blob(["resume"], { type: "application/pdf" }), "resume.pdf");
@@ -171,11 +195,26 @@ assert.equal((await requestMultipart("/api/me/attachments", { token: memberSessi
 const uploadedResume = await requestMultipart("/api/me/attachments", { token: memberSession.token, method: "POST", form: resumeForm });
 assert.equal(uploadedResume.response.status, 201, JSON.stringify(uploadedResume.payload));
 const resumeId = uploadedResume.payload.data.id;
+assert.match(uploadedResume.payload.data.originalName, /简历\.pdf$/);
 assert.equal((await request(`/api/people/${childId}`, { token: memberSession.token })).payload.data.resume.id, resumeId);
 assert.equal((await request(`/api/attachments/${resumeId}`)).response.status, 401);
 assert.equal((await request(`/api/attachments/${resumeId}`, { token: memberSession.token })).response.status, 200);
+const replacementResumeForm = new FormData();
+replacementResumeForm.append("file", new Blob(["replacement resume"], { type: "application/pdf" }), "updated-resume.pdf");
+replacementResumeForm.append("category", "resume");
+replacementResumeForm.append("visibility", "members");
+const replacementResume = await requestMultipart("/api/me/attachments", { token: memberSession.token, method: "POST", form: replacementResumeForm });
+assert.equal(replacementResume.response.status, 201, JSON.stringify(replacementResume.payload));
+const replacementResumeId = replacementResume.payload.data.id;
+assert.notEqual(replacementResumeId, resumeId);
+const ownerAfterResumeReplacement = await request(`/api/people/${childId}`, { token: memberSession.token });
+assert.equal(ownerAfterResumeReplacement.payload.data.resume.id, replacementResumeId);
+assert.equal(ownerAfterResumeReplacement.payload.data.attachments.filter((item) => item.category === "resume").length, 1);
+assert.equal((await request(`/api/attachments/${resumeId}`, { token: memberSession.token })).response.status, 404, "old resume object is no longer readable");
+assert.equal((await request(`/api/attachments/${replacementResumeId}`, { token: memberSession.token })).response.status, 200);
+assert.equal((await request(`/api/attachments/${replacementResumeId}`)).response.status, 401, "member attachments remain protected for anonymous visitors");
 assert.equal((await request(`/api/me/attachments/${avatarId}`, { token: memberSession.token, method: "DELETE" })).response.status, 204);
-assert.equal((await request(`/api/me/attachments/${resumeId}`, { token: memberSession.token, method: "DELETE" })).response.status, 204);
+assert.equal((await request(`/api/me/attachments/${replacementResumeId}`, { token: memberSession.token, method: "DELETE" })).response.status, 204);
 const afterAttachmentDelete = await request(`/api/people/${childId}`, { token: memberSession.token });
 assert.equal(afterAttachmentDelete.payload.data.avatarUrl, null);
 assert.equal(afterAttachmentDelete.payload.data.resume, null);

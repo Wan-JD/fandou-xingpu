@@ -13,6 +13,7 @@ type MemberRow = {
   cohort_id: string | null;
   cohort_label: string | null;
   status: "active" | "archived";
+  member_type: "formal" | "probationary";
   destination: string | null;
   mentor_id: string | null;
   mentor_name: string | null;
@@ -72,9 +73,9 @@ async function mentorProblem(db: D1Database, personId: string, mentorId: string 
 }
 
 function mentorError(code: string) {
-  if (code === "SCOPE_MENTOR_CONFLICT") return error(409, code, "同届成员不能设置师傅");
+  if (code === "SCOPE_MENTOR_CONFLICT") return error(409, code, "同级成员不能设置师傅");
   if (code === "MENTOR_NOT_LINEAGE") return error(409, code, "谱系人物只能选择谱系中的师傅");
-  if (code === "HAS_LINEAGE_STUDENTS") return error(409, code, "仍有谱系徒弟，不能改为同届成员");
+  if (code === "HAS_LINEAGE_STUDENTS") return error(409, code, "仍有谱系徒弟，不能改为同级成员");
   if (code === "MENTOR_SELF") return error(409, code, "人物不能成为自己的师傅");
   if (code === "MENTOR_NOT_FOUND") return error(404, code, "指定师傅不存在");
   return error(409, "MENTOR_CYCLE", "师徒关系会形成循环");
@@ -98,7 +99,7 @@ adminApi.use("/*", async (c, next) => {
 adminApi.get("/members", async (c) => {
   const rows = await c.env.DB!.prepare(`
     SELECT p.id, p.name, p.nickname, p.bio, p.role, p.is_featured, p.featured_note, p.tags_json,
-      p.cohort_id, c.label AS cohort_label, p.status, p.destination,
+      p.cohort_id, c.label AS cohort_label, p.status, p.member_type, p.destination,
       p.mentor_id, mentor.name AS mentor_name, p.relation_scope, p.version,
       u.id AS account_id, u.email, u.role AS account_role, u.status AS account_status
     FROM people p
@@ -116,6 +117,7 @@ adminApi.post("/members", async (c) => {
   const cohortId = nullableId(body?.cohortId);
   const mentorId = nullableId(body?.mentorId);
   const status = typeof body?.status === "string" && personStatuses.has(body.status) ? body.status : "active";
+  const memberType = body?.memberType === "probationary" ? "probationary" : "formal";
   const destination = body?.destination === null || body?.destination === "" ? null
     : typeof body?.destination === "string" && destinations.has(body.destination) ? body.destination : undefined;
   const relationScope = typeof body?.relationScope === "string" && relationScopes.has(body.relationScope)
@@ -123,7 +125,7 @@ adminApi.post("/members", async (c) => {
     : mentorId ? "lineage" : "cohort_guest";
   if (!name || destination === undefined) return error(400, "VALIDATION_ERROR", "请检查姓名和去向");
   if (cohortId && !await c.env.DB!.prepare("SELECT id FROM cohorts WHERE id = ?").bind(cohortId).first()) {
-    return error(404, "COHORT_NOT_FOUND", "指定届次不存在");
+    return error(404, "COHORT_NOT_FOUND", "指定级别不存在");
   }
   const id = `person-${crypto.randomUUID()}`;
   const relationError = await mentorProblem(c.env.DB!, id, mentorId, relationScope as "lineage" | "cohort_guest");
@@ -134,10 +136,10 @@ adminApi.post("/members", async (c) => {
       c.env.DB!.prepare(`
         INSERT INTO people (
           id, name, nickname, mentor_id, cohort_id, relation_scope, bio,
-          is_featured, status, destination, role, joined_at, tags_json
-        ) VALUES (?, ?, NULL, ?, ?, ?, '', 0, ?, ?, '星谱成员', date('now'), '[]')
-      `).bind(id, name, mentorId, cohortId, relationScope, status, destination),
-      audit(c.env.DB!, actor.id, "member.create", "person", id, { name, cohortId, mentorId, status, destination, relationScope }),
+          is_featured, status, member_type, destination, role, joined_at, tags_json
+        ) VALUES (?, ?, NULL, ?, ?, ?, '', 0, ?, ?, ?, '星谱成员', date('now'), '[]')
+      `).bind(id, name, mentorId, cohortId, relationScope, status, memberType, destination),
+      audit(c.env.DB!, actor.id, "member.create", "person", id, { name, cohortId, mentorId, status, memberType, destination, relationScope }),
     ]);
   } catch (cause) {
     const code = String(cause).match(/MENTOR_(SELF|NOT_FOUND|NOT_LINEAGE|CYCLE)|SCOPE_MENTOR_CONFLICT|HAS_LINEAGE_STUDENTS/)?.[0];
@@ -196,15 +198,19 @@ adminApi.patch("/members/:id", async (c) => {
   }
   if ("cohortId" in body) {
     const cohortId = nullableId(body.cohortId);
-    if (body.cohortId !== null && body.cohortId !== "" && !cohortId) return error(400, "VALIDATION_ERROR", "届次编号无效");
+    if (body.cohortId !== null && body.cohortId !== "" && !cohortId) return error(400, "VALIDATION_ERROR", "级别编号无效");
     if (cohortId && !await c.env.DB!.prepare("SELECT id FROM cohorts WHERE id = ?").bind(cohortId).first()) {
-      return error(404, "COHORT_NOT_FOUND", "指定届次不存在");
+      return error(404, "COHORT_NOT_FOUND", "指定级别不存在");
     }
     assignments.push("cohort_id = ?"); values.push(cohortId); details.cohortId = cohortId;
   }
   if ("status" in body) {
     if (typeof body.status !== "string" || !personStatuses.has(body.status)) return error(400, "VALIDATION_ERROR", "人物状态无效");
     assignments.push("status = ?"); values.push(body.status); details.status = body.status;
+  }
+  if ("memberType" in body) {
+    if (body.memberType !== "formal" && body.memberType !== "probationary") return error(400, "VALIDATION_ERROR", "组员身份无效");
+    assignments.push("member_type = ?"); values.push(body.memberType); details.memberType = body.memberType;
   }
   if ("destination" in body) {
     const destination = body.destination === null || body.destination === "" ? null
@@ -261,7 +267,7 @@ adminApi.post("/cohorts", async (c) => {
   const sortOrder = Number(body?.sortOrder ?? year ?? 0);
   const description = typeof body?.description === "string" ? body.description.trim().slice(0, 1000) : "";
   if (!label || (year !== null && (!Number.isInteger(year) || year < 1900 || year > 2200)) || !Number.isInteger(sortOrder)) {
-    return error(400, "VALIDATION_ERROR", "请检查届次名称、年份和排序");
+    return error(400, "VALIDATION_ERROR", "请检查级别名称、年份和排序");
   }
   const id = `cohort-${crypto.randomUUID()}`;
   const actor = c.get("adminUser");
@@ -275,13 +281,13 @@ adminApi.post("/cohorts", async (c) => {
 
 adminApi.patch("/cohorts/:id", async (c) => {
   const id = c.req.param("id");
-  if (!await c.env.DB!.prepare("SELECT id FROM cohorts WHERE id = ?").bind(id).first()) return error(404, "COHORT_NOT_FOUND", "届次不存在");
+  if (!await c.env.DB!.prepare("SELECT id FROM cohorts WHERE id = ?").bind(id).first()) return error(404, "COHORT_NOT_FOUND", "级别不存在");
   const body = await c.req.json().catch(() => null) as Record<string, unknown> | null;
   if (!body) return error(400, "VALIDATION_ERROR", "请求内容无效");
   const assignments: string[] = [];
   const values: unknown[] = [];
   const details: Record<string, unknown> = {};
-  if ("label" in body) { const value = text(body.label); if (!value) return error(400, "VALIDATION_ERROR", "届次名称无效"); assignments.push("label = ?"); values.push(value); details.label = value; }
+  if ("label" in body) { const value = text(body.label); if (!value) return error(400, "VALIDATION_ERROR", "级别名称无效"); assignments.push("label = ?"); values.push(value); details.label = value; }
   if ("year" in body) { const value = body.year === null || body.year === "" ? null : Number(body.year); if (value !== null && (!Number.isInteger(value) || value < 1900 || value > 2200)) return error(400, "VALIDATION_ERROR", "年份无效"); assignments.push("year = ?"); values.push(value); details.year = value; }
   if ("sortOrder" in body) { const value = Number(body.sortOrder); if (!Number.isInteger(value)) return error(400, "VALIDATION_ERROR", "排序无效"); assignments.push("sort_order = ?"); values.push(value); details.sortOrder = value; }
   if ("description" in body) { const value = typeof body.description === "string" ? body.description.trim().slice(0, 1000) : ""; assignments.push("description = ?"); values.push(value); details.description = value; }
@@ -298,9 +304,9 @@ adminApi.patch("/cohorts/:id", async (c) => {
 adminApi.delete("/cohorts/:id", async (c) => {
   const id = c.req.param("id");
   const cohort = await c.env.DB!.prepare("SELECT id FROM cohorts WHERE id = ?").bind(id).first();
-  if (!cohort) return error(404, "COHORT_NOT_FOUND", "届次不存在");
+  if (!cohort) return error(404, "COHORT_NOT_FOUND", "级别不存在");
   const member = await c.env.DB!.prepare("SELECT id FROM people WHERE cohort_id = ? LIMIT 1").bind(id).first();
-  if (member) return error(409, "COHORT_NOT_EMPTY", "请先调整该届次成员");
+  if (member) return error(409, "COHORT_NOT_EMPTY", "请先调整该级别成员");
   const actor = c.get("adminUser");
   await c.env.DB!.batch([
     c.env.DB!.prepare("DELETE FROM cohorts WHERE id = ?").bind(id),

@@ -64,7 +64,7 @@ export async function hashToken(token: string) {
   return bytesToHex(new Uint8Array(digest));
 }
 
-export function createOpaqueToken(prefix: "session" | "invite") {
+export function createOpaqueToken(prefix: "session" | "invite" | "claim") {
   return `${prefix}_${crypto.randomUUID()}`;
 }
 

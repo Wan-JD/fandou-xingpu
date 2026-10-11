@@ -6,6 +6,7 @@ import { accountApi } from "./account-api.ts";
 import contentApi, { attachmentApi } from "./content-api.ts";
 import { adminApi } from "./admin-api.ts";
 import { inviteApi } from "./invites.ts";
+import { claimApi } from "./claims.ts";
 import { persistence } from "./persistence.ts";
 import type { Env } from "./types";
 
@@ -31,6 +32,7 @@ app.get("/api/health", (c) => c.json({
 }));
 
 app.route("/api/invites", inviteApi);
+app.route("/api/claims", claimApi);
 app.route("/api/admin", adminApi);
 app.route("/api", accountApi);
 app.route("/api/me", contentApi);
