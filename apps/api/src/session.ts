@@ -17,7 +17,9 @@ export type LoginResult =
   | { status: "invalid" }
   | { status: "rate_limited"; retryAfterSeconds: number };
 
-const PASSWORD_ITERATIONS = 120_000;
+// Cloudflare Workers WebCrypto rejects PBKDF2 iteration counts above 100,000.
+// Keep the derivation within that platform limit so login works in production.
+const PASSWORD_ITERATIONS = 100_000;
 export const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 export const normalizeEmail = (email: string) => email.trim().toLocaleLowerCase();
 const bytesToHex = (bytes: Uint8Array) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");

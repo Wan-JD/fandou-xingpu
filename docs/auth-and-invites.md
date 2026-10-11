@@ -34,7 +34,7 @@ pnpm db:bootstrap:local
 pnpm dev
 ```
 
-本地 D1 使用 `database/migrations/0003_auth_and_persistence.sql` 保存账号哈希、会话过期时间、邀请 token 哈希和人物资料；`0007` 清理历史 fixture 并移除历史账号标记。密码使用 PBKDF2-SHA256 派生，数据库只保存 salt 与 hash；会话和邀请码只保存 hash，明文 token 只在创建响应中返回。
+本地 D1 使用 `database/migrations/0003_auth_and_persistence.sql` 保存账号哈希、会话过期时间、邀请 token 哈希和人物资料；`0007` 清理历史 fixture 并移除历史账号标记。密码使用 PBKDF2-SHA256 派生（100,000 次迭代，兼容 Cloudflare Workers WebCrypto），数据库只保存 salt 与 hash；会话和邀请码只保存 hash，明文 token 只在创建响应中返回。
 
 受保护接口读取 `Authorization: Bearer <token>`；前端将明文 token 保存在本地会话存储中，D1 只保存 SHA-256 hash。当前实现没有 Cookie 或 CSRF 机制，因此正式站必须使用 HTTPS，并用精确 `ALLOWED_ORIGIN` 限制跨域来源。
 
