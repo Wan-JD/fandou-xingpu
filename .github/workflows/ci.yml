@@ -49,6 +49,7 @@ jobs:
       # The Worker is deployed by the Cloudflare Workers Builds integration
       # connected to this repository. Keeping a second deploy here races that
       # build and can make the Workers Builds check fail on the same commit.
+      # Workers Builds calls `pnpm --dir apps/api exec wrangler deploy` itself.
       - name: Build web app
         run: pnpm --dir apps/web build
       - name: Deploy Pages and Functions
