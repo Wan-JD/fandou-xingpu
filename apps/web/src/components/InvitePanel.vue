@@ -8,12 +8,16 @@ const inviteUrl = ref("");
 const expiresAt = ref("");
 const copied = ref(false);
 type Cohort = { id: string; label: string; year: number | null };
-type Placeholder = { personId: string; name: string; memberType: "formal" | "probationary"; cohort: Cohort | null; expiresAt: string; claimedAt: string | null; state: "pending" | "expired" | "claimed" | "account-created"; account?: { identifier?: string; temporaryPassword?: string } | null };
+type Placeholder = { personId: string; name: string; memberType: "formal" | "probationary"; cohort: Cohort | null; expiresAt: string; claimedAt: string | null; version: number; state: "pending" | "expired" | "claimed" | "account-created"; account?: { identifier?: string; temporaryPassword?: string } | null };
 const placeholders = ref<Placeholder[]>([]);
 const placeholderForm = ref({ name: "", loginIdentifier: "", cohortYear: "", memberType: "probationary" as "formal" | "probationary" });
 const placeholderLoading = ref(false);
 const placeholderError = ref("");
 const placeholderDialogOpen = ref(false);
+const studentEditDialogOpen = ref(false);
+const studentSaving = ref(false);
+const studentError = ref("");
+const studentForm = ref({ personId: "", name: "", cohortYear: "", memberType: "probationary" as "formal" | "probationary", version: 1 });
 const claimPath = ref("");
 const claimCopied = ref(false);
 const createdAccount = ref<{ identifier: string; temporaryPassword: string; mustChangePassword: boolean } | null>(null);
@@ -71,6 +75,49 @@ function openPlaceholderDialog() {
 
 function closePlaceholderDialog() {
   if (!placeholderLoading.value) placeholderDialogOpen.value = false;
+}
+
+function editStudent(item: Placeholder) {
+  studentError.value = "";
+  studentForm.value = {
+    personId: item.personId,
+    name: item.name,
+    cohortYear: item.cohort?.year ? String(item.cohort.year) : "",
+    memberType: item.memberType,
+    version: item.version,
+  };
+  studentEditDialogOpen.value = true;
+}
+
+function closeStudentEditDialog() {
+  if (!studentSaving.value) studentEditDialogOpen.value = false;
+}
+
+async function saveStudent() {
+  if (!studentForm.value.personId || !studentForm.value.name.trim()) return;
+  studentSaving.value = true;
+  studentError.value = "";
+  try {
+    const response = await fetch(`/api/me/placeholder-students/${encodeURIComponent(studentForm.value.personId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${props.sessionToken}` },
+      body: JSON.stringify({ version: studentForm.value.version, name: studentForm.value.name.trim(), cohortYear: studentForm.value.cohortYear ? Number(studentForm.value.cohortYear) : null, memberType: studentForm.value.memberType }),
+    });
+    const payload = await response.json().catch(() => null) as { data?: Placeholder; error?: { message?: string } } | null;
+    if (!response.ok) throw new Error(payload?.error?.message ?? "徒弟资料保存失败");
+    const updated = placeholders.value.find((item) => item.personId === studentForm.value.personId);
+    if (updated) {
+      updated.name = studentForm.value.name.trim();
+      updated.memberType = studentForm.value.memberType;
+      updated.cohort = studentForm.value.cohortYear ? { id: `cohort-${studentForm.value.cohortYear}`, label: `${studentForm.value.cohortYear}级`, year: Number(studentForm.value.cohortYear) } : null;
+      if (payload?.data) Object.assign(updated, payload.data);
+    }
+    studentEditDialogOpen.value = false;
+  } catch (cause) {
+    studentError.value = cause instanceof Error ? cause.message : "徒弟资料保存失败";
+  } finally {
+    studentSaving.value = false;
+  }
 }
 
 async function copyClaim() {
@@ -184,7 +231,7 @@ async function copyInvite() {
     <div v-if="placeholders.length" class="placeholder-list">
       <div v-for="item in placeholders" :key="item.personId" class="placeholder-item">
         <span><strong>{{ item.name }}</strong><small>{{ item.cohort?.label ?? "未分级" }} · {{ item.memberType === "probationary" ? "预备组员" : "正式组员" }}<template v-if="item.account?.identifier"> · 登录：{{ item.account.identifier }}</template></small></span>
-        <span class="placeholder-state"><em>{{ item.state === "account-created" ? "账号已建立" : item.state === "claimed" ? "已认领" : item.state === "expired" ? "链接过期" : "等待认领" }}</em><button v-if="item.state !== 'claimed' && item.state !== 'account-created'" type="button" @click="rotateClaim(item.personId)">更新链接</button></span>
+        <span class="placeholder-state"><em>{{ item.state === "account-created" ? "账号已建立" : item.state === "claimed" ? "已认领" : item.state === "expired" ? "链接过期" : "等待认领" }}</em><button type="button" @click="editStudent(item)">编辑资料</button><button v-if="item.state !== 'claimed' && item.state !== 'account-created'" type="button" @click="rotateClaim(item.personId)">更新链接</button></span>
       </div>
     </div>
     <div v-if="placeholderDialogOpen" class="placeholder-dialog-backdrop" @click.self="closePlaceholderDialog">
@@ -205,6 +252,22 @@ async function copyInvite() {
             <button class="secondary-command" type="button" @click="closePlaceholderDialog">取消</button>
             <button class="invite-action" type="submit" :disabled="placeholderLoading || !placeholderForm.name">{{ placeholderLoading ? "正在建立账号" : "建立徒弟账号" }}</button>
           </div>
+        </form>
+      </section>
+    </div>
+    <div v-if="studentEditDialogOpen" class="placeholder-dialog-backdrop" @click.self="closeStudentEditDialog">
+      <section class="placeholder-dialog" role="dialog" aria-modal="true" aria-labelledby="student-edit-title">
+        <button class="placeholder-dialog-close" type="button" aria-label="关闭徒弟资料窗口" @click="closeStudentEditDialog">×</button>
+        <span class="invite-label">徒弟资料</span>
+        <h2 id="student-edit-title">编辑徒弟信息</h2>
+        <form class="placeholder-form" @submit.prevent="saveStudent">
+          <label>姓名<input v-model.trim="studentForm.name" maxlength="100" required autofocus /></label>
+          <div class="placeholder-row">
+            <label>级别年份<input v-model.trim="studentForm.cohortYear" type="number" min="1900" max="2200" placeholder="例如 2023" /></label>
+            <label>身份<select v-model="studentForm.memberType"><option value="probationary">预备组员</option><option value="formal">正式组员</option></select></label>
+          </div>
+          <p v-if="studentError" class="invite-error" role="alert">{{ studentError }}</p>
+          <div class="placeholder-dialog-actions"><button class="secondary-command" type="button" @click="closeStudentEditDialog">取消</button><button class="invite-action" type="submit" :disabled="studentSaving || !studentForm.name">{{ studentSaving ? "保存中" : "保存修改" }}</button></div>
         </form>
       </section>
     </div>

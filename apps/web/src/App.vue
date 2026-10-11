@@ -391,6 +391,9 @@ function openMyProfile() {
   }
   navigate(`/person/${encodeURIComponent(sessionUser.value.personId)}`);
 }
+async function refreshAfterAdminChange() {
+  await Promise.all([loadTree(), loadSession()]);
+}
 function startProfileEdit() {
   if (!detail.value || !isOwnDetail.value) return;
   profileForm.value = {
@@ -722,7 +725,7 @@ onUnmounted(() => {
       <ClaimRegistration :token="claimToken" />
     </main>
     <main v-else-if="isAdminRoute" class="detail-page" aria-live="polite">
-      <AdminPanel v-if="sessionUser?.role === 'admin' && sessionToken" :session-token="sessionToken" @changed="loadTree" />
+      <AdminPanel v-if="sessionUser?.role === 'admin' && sessionToken" :session-token="sessionToken" @changed="refreshAfterAdminChange" />
       <section v-else class="state-message" role="status"><p>管理员账号登录后才能打开维护工作台。</p><button type="button" @click="() => openAuth()">登录管理员账号</button></section>
     </main>
     <main v-else-if="!isDetailRoute" class="home-page">
@@ -952,22 +955,22 @@ onUnmounted(() => {
             <p v-if="detail.bio" class="detail-copy">{{ detail.bio }}</p>
             <div v-else class="empty-detail"><span>✦</span><p>这颗星还在积攒星尘，简介稍后回来。</p></div>
           </article>
-          <article v-if="detail.education" class="detail-section"><span class="section-label">{{ detailSectionNumber("education") }} / 教育经历</span><p class="detail-copy profile-preline">{{ detail.education }}</p></article>
-          <article v-if="detail.experience" class="detail-section"><span class="section-label">{{ detailSectionNumber("experience") }} / 工作与项目</span><p class="detail-copy profile-preline">{{ detail.experience }}</p></article>
-          <article v-if="detail.skills?.length" class="detail-section"><span class="section-label">{{ detailSectionNumber("skills") }} / 技能</span><div class="tag-row"><span v-for="skill in detail.skills" :key="skill" class="tag">{{ skill }}</span></div></article>
-          <article v-if="detail.links?.length" class="detail-section"><span class="section-label">{{ detailSectionNumber("links") }} / 个人链接</span><div class="profile-content-list"><a v-for="link in detail.links" :key="link.url" class="content-item attachment-item" :href="link.url" target="_blank" rel="noreferrer"><strong>{{ link.label }}</strong><p>{{ link.url }}</p></a></div></article>
-          <article v-if="detail.contactEmail" class="detail-section"><span class="section-label">{{ detailSectionNumber("contact") }} / 联系方式</span><a class="content-item attachment-item" :href="`mailto:${detail.contactEmail}`">{{ detail.contactEmail }}</a></article>
-          <article class="detail-section split-section">
-            <div>
-              <span class="section-label">{{ detailSectionNumber("relation") }} / 关系</span>
-              <h2>{{ detailMentor ? "沿着一条主线继续" : "谱系起点" }}</h2>
-              <p>{{ detailMentor ? "这位成员从上一级连接而来，并把自己的经验继续传给下一位。" : "从这里出发，连接仍在发生。" }}</p>
-              <button v-if="detailMentor" class="popover-detail" type="button" @click="viewDetail(detailMentor)">师傅：{{ detailMentor.name }} <span aria-hidden="true">↗</span></button>
-              <p v-else class="relation-muted">暂无已记录的师傅</p>
-              <div v-if="detailStudents.length" class="relation-students">
-                <span class="section-label">传给下一级</span>
-                <button v-for="student in detailStudents" :key="student.id" class="popover-detail" type="button" @click="viewDetail(student)">学生：{{ student.name }} <span aria-hidden="true">↗</span></button>
-              </div>
+          <article v-if="detail.education || detail.experience || detail.skills?.length || detail.links?.length || detail.contactEmail" class="detail-section profile-facts">
+            <div v-if="detail.education" class="profile-fact"><span class="section-label">{{ detailSectionNumber("education") }} / 教育经历</span><p class="detail-copy profile-preline">{{ detail.education }}</p></div>
+            <div v-if="detail.experience" class="profile-fact"><span class="section-label">{{ detailSectionNumber("experience") }} / 工作与项目</span><p class="detail-copy profile-preline">{{ detail.experience }}</p></div>
+            <div v-if="detail.skills?.length" class="profile-fact"><span class="section-label">{{ detailSectionNumber("skills") }} / 技能</span><div class="tag-row"><span v-for="skill in detail.skills" :key="skill" class="tag">{{ skill }}</span></div></div>
+            <div v-if="detail.links?.length" class="profile-fact"><span class="section-label">{{ detailSectionNumber("links") }} / 个人链接</span><div class="profile-content-list"><a v-for="link in detail.links" :key="link.url" class="content-item attachment-item" :href="link.url" target="_blank" rel="noreferrer"><strong>{{ link.label }}</strong><p>{{ link.url }}</p></a></div></div>
+            <div v-if="detail.contactEmail" class="profile-fact"><span class="section-label">{{ detailSectionNumber("contact") }} / 联系方式</span><a class="content-item attachment-item" :href="`mailto:${detail.contactEmail}`">{{ detail.contactEmail }}</a></div>
+          </article>
+           <article class="detail-section split-section">
+             <div>
+               <span class="section-label">{{ detailSectionNumber("relation") }} / 关系</span>
+               <button v-if="detailMentor" class="popover-detail" type="button" @click="viewDetail(detailMentor)">师傅：{{ detailMentor.name }} <span aria-hidden="true">↗</span></button>
+               <p v-else class="relation-muted">暂无师傅</p>
+               <div v-if="detailStudents.length" class="relation-students">
+                 <span class="section-label">徒弟</span>
+                 <button v-for="student in detailStudents" :key="student.id" class="popover-detail" type="button" @click="viewDetail(student)">徒弟：{{ student.name }} <span aria-hidden="true">↗</span></button>
+               </div>
             </div>
             <div>
               <span class="section-label">{{ detailSectionNumber("joined") }} / 加入时间</span>

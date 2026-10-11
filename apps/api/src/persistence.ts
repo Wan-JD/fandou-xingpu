@@ -584,7 +584,7 @@ export class D1Persistence {
         input.displayName.trim(),
         input.mentorId,
         year,
-        input.mentorId ? "lineage" : "cohort_guest",
+        "lineage",
         "刚刚加入星谱，个人简介等待补充。",
         joinedAt,
       ),
@@ -694,6 +694,33 @@ export class D1Persistence {
     return this.personDetail(personId);
   }
 
+  async updateMentoredStudent(mentorId: string, personId: string, input: {
+    version: number;
+    name?: string;
+    cohortYear?: number | null;
+    memberType?: Person["memberType"];
+    status?: Person["status"];
+  }) {
+    const assignments: string[] = [];
+    const values: unknown[] = [];
+    if (input.name !== undefined) { assignments.push("name = ?"); values.push(input.name.trim()); }
+    if ("cohortYear" in input) { assignments.push("cohort_year = ?, cohort_id = NULL"); values.push(input.cohortYear ?? null); }
+    if (input.memberType !== undefined) { assignments.push("member_type = ?"); values.push(input.memberType); }
+    if (input.status !== undefined) { assignments.push("status = ?"); values.push(input.status); }
+    if (!assignments.length) return null;
+    assignments.push("version = version + 1", "updated_at = datetime('now')");
+    const result = await this.db.prepare(`
+      UPDATE people SET ${assignments.join(", ")}
+      WHERE id = ? AND mentor_id = ? AND version = ?
+    `).bind(...values, personId, mentorId, input.version).run();
+    if ((result.meta.changes ?? 0) === 0) return null;
+    if (input.name !== undefined) {
+      await this.db.prepare("UPDATE users SET display_name = ?, updated_at = datetime('now') WHERE person_id = ?")
+        .bind(input.name.trim(), personId).run();
+    }
+    return this.personDetail(personId);
+  }
+
   async createInvite(mentorId: string, createdByUserId: string, now = Date.now(), ttlMs = INVITE_TTL_MS) {
     const token = createOpaqueToken("invite");
     const tokenHash = await hashToken(token);
@@ -760,19 +787,20 @@ export class D1Persistence {
 
   async listPlaceholders(mentorId: string) {
     const rows = await this.db.prepare(`
-      SELECT p.id AS person_id, p.name, p.member_type, p.status, p.cohort_year,
+      SELECT p.id AS person_id, p.name, p.member_type, p.status, p.cohort_year, p.version,
         p.created_at, c.expires_at, c.claimed_at, u.email, u.phone
       FROM people p
       LEFT JOIN person_claims c ON c.person_id = p.id
       LEFT JOIN users u ON u.person_id = p.id
       WHERE p.mentor_id = ?
       ORDER BY p.created_at DESC
-    `).bind(mentorId).all<ClaimRow & { name: string; member_type: string; status: string; cohort_year: number | null; email: string | null; phone: string | null }>();
+    `).bind(mentorId).all<ClaimRow & { name: string; member_type: string; status: string; cohort_year: number | null; version: number; email: string | null; phone: string | null }>();
     return rows.results.map((row) => ({
       personId: row.person_id,
       name: row.name,
       memberType: row.member_type,
       status: row.status,
+      version: row.version,
       cohort: row.cohort_year ? { id: `cohort-${row.cohort_year}`, label: `${row.cohort_year}级`, year: row.cohort_year } : null,
       createdAt: row.created_at,
       expiresAt: row.expires_at ?? "",

@@ -125,6 +125,33 @@ accountApi.get("/me/placeholder-students", async (c) => {
   return c.json({ data: items, meta: { total: items.length } });
 });
 
+accountApi.patch("/me/placeholder-students/:personId", async (c) => {
+  if (!c.env?.DB) return errorResponse("认证数据库未配置", "DATABASE_UNAVAILABLE", 503);
+  const store = persistence(c.env.DB);
+  const session = await store.session(c.req.header("Authorization"));
+  if (!session) return errorResponse("请先登录", "UNAUTHENTICATED", 401);
+  const personId = c.req.param("personId");
+  const body = await c.req.json().catch(() => null) as Record<string, unknown> | null;
+  const version = Number(body?.version);
+  const name = body?.name === undefined ? undefined : typeof body.name === "string" ? body.name.trim() : "";
+  const hasCohortYear = Object.prototype.hasOwnProperty.call(body ?? {}, "cohortYear");
+  const cohortYear = !hasCohortYear || body?.cohortYear === null || body?.cohortYear === "" ? null : Number(body?.cohortYear);
+  const memberType = body?.memberType === undefined ? undefined : body.memberType === "formal" || body.memberType === "probationary" ? body.memberType : null;
+  const status = body?.status === undefined ? undefined : body.status === "active" || body.status === "archived" ? body.status : null;
+  if (!Number.isInteger(version) || version < 1 || (name !== undefined && (!name || name.length > 100)) || (cohortYear !== null && (!Number.isInteger(cohortYear) || cohortYear < 1900 || cohortYear > 2200)) || memberType === null || status === null) {
+    return errorResponse("请检查徒弟资料", "VALIDATION_ERROR", 400);
+  }
+  const updated = await store.updateMentoredStudent(session.user.personId, personId, {
+    version,
+    name,
+    ...(hasCohortYear ? { cohortYear } : {}),
+    ...(memberType !== undefined ? { memberType } : {}),
+    ...(status !== undefined ? { status } : {}),
+  });
+  if (!updated) return errorResponse("徒弟不存在、不是你的徒弟，或资料已更新", "VERSION_CONFLICT", 409);
+  return c.json({ data: updated });
+});
+
 accountApi.post("/me/placeholder-students/:personId/claim", async (c) => {
   if (!c.env?.DB) return errorResponse("认证数据库未配置", "DATABASE_UNAVAILABLE", 503);
   const store = persistence(c.env.DB);

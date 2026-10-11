@@ -6,13 +6,12 @@ type Member = {
   status: "active" | "archived"; destination: string | null; mentor_id: string | null;
   mentor_name: string | null; relation_scope: "lineage" | "cohort_guest"; version: number;
   bio: string; role: string; member_type: "formal" | "probationary"; is_featured: number; featured_note: string | null; tags_json: string;
-  account_id: string | null; email: string | null; account_role: "member" | "admin" | null;
+  account_id: string | null; email: string | null; phone: string | null; account_role: "member" | "admin" | null;
   account_status: "active" | "disabled" | null;
 };
 type Cohort = { id: string; label: string; year: number | null; sort_order: number; description: string; member_count: number };
 type Invite = { id: string; mentor_id: string; mentor_name: string; created_at: string; expires_at: string; accepted_at: string | null; accepted_person_id: string | null; revoked_at: string | null };
-type AuditLog = { id: string; actor_name: string; action: string; target_type: string; target_id: string; details_json: string; created_at: string };
-type Tab = "members" | "invites" | "audit";
+type Tab = "members" | "invites";
 
 const props = defineProps<{ sessionToken: string }>();
 const emit = defineEmits<{ changed: [] }>();
@@ -23,7 +22,6 @@ const notice = ref("");
 const failure = ref("");
 const members = ref<Member[]>([]);
 const invites = ref<Invite[]>([]);
-const logs = ref<AuditLog[]>([]);
 const editingId = ref("");
 const editForm = ref({ name: "", bio: "", role: "", memberType: "formal" as "formal" | "probationary", isFeatured: false, featuredNote: "", tags: "", cohortYear: "", status: "active", destination: "", mentorId: "", relationScope: "lineage" });
 const memberForm = ref({ name: "", cohortYear: String(new Date().getFullYear()), status: "active", memberType: "formal" as "formal" | "probationary", destination: "", mentorId: "", relationScope: "lineage" });
@@ -33,7 +31,6 @@ const resetPasswords = ref<Record<string, string>>({});
 const tabs: { id: Tab; label: string }[] = [
   { id: "members", label: "成员与账号" },
   { id: "invites", label: "邀请" },
-  { id: "audit", label: "审计日志" },
 ];
 const destinationOptions = [
   ["", "暂未填写"], ["big_tech", "大厂"], ["postgraduate_985", "985 研"],
@@ -54,12 +51,11 @@ async function loadAll() {
   loading.value = true;
   failure.value = "";
   try {
-    const [memberRows, inviteRows, auditRows] = await Promise.all([
-      api<Member[]>("/members"), api<Invite[]>("/invites"), api<AuditLog[]>("/audit-logs?limit=100"),
+    const [memberRows, inviteRows] = await Promise.all([
+      api<Member[]>("/members"), api<Invite[]>("/invites"),
     ]);
     members.value = memberRows;
     invites.value = inviteRows;
-    logs.value = auditRows;
   } catch (cause) {
     failure.value = cause instanceof Error ? cause.message : "管理资料读取失败";
   } finally {
@@ -109,10 +105,20 @@ function editMember(member: Member) {
 async function saveMember(member: Member) {
   const ok = await mutate(`member-${member.id}`, () => api(`/members/${encodeURIComponent(member.id)}`, {
     method: "PATCH",
-    body: JSON.stringify({ ...editForm.value, version: member.version,
-      featuredNote: editForm.value.featuredNote || null, memberType: editForm.value.memberType,
+    body: JSON.stringify({
+      name: editForm.value.name,
+      bio: editForm.value.bio,
+      role: editForm.value.role,
+      isFeatured: editForm.value.isFeatured,
+      featuredNote: editForm.value.featuredNote || null,
+      status: editForm.value.status,
+      memberType: editForm.value.memberType,
       tags: editForm.value.tags.split(/[、,，]/).map((tag) => tag.trim()).filter(Boolean),
-      cohortYear: editForm.value.cohortYear ? Number(editForm.value.cohortYear) : null, mentorId: editForm.value.mentorId || null, destination: editForm.value.destination || null }),
+      cohortYear: editForm.value.cohortYear ? Number(editForm.value.cohortYear) : null,
+      mentorId: editForm.value.mentorId || null,
+      destination: editForm.value.destination || null,
+      version: member.version,
+    }),
   }), "成员资料已保存", true);
   if (ok) editingId.value = "";
 }
@@ -124,6 +130,12 @@ async function setAccountStatus(member: Member) {
   await mutate(`account-${member.account_id}`, () => api(`/accounts/${encodeURIComponent(member.account_id!)}/status`, {
     method: "PATCH", body: JSON.stringify({ status }),
   }), status === "active" ? "账号已启用" : "账号已停用");
+}
+
+async function deleteAccount(member: Member) {
+  if (!member.account_id) return;
+  if (!window.confirm(`删除 ${member.name} 的登录账号？人物节点会保留，之后仍可重新绑定账号。`)) return;
+  await mutate(`delete-account-${member.account_id}`, () => api(`/accounts/${encodeURIComponent(member.account_id!)}`, { method: "DELETE" }), "账号已删除");
 }
 
 async function setAccountRole(member: Member, role: "member" | "admin") {
@@ -189,7 +201,6 @@ onMounted(loadAll);
         <label>组员身份<select v-model="memberForm.memberType"><option value="formal">正式组员</option><option value="probationary">预备组员</option></select></label>
         <label>去向<select v-model="memberForm.destination"><option v-for="option in destinationOptions" :key="option[0]" :value="option[0]">{{ option[1] }}</option></select></label>
         <label>师傅<select v-model="memberForm.mentorId"><option value="">无</option><option v-for="member in members" :key="member.id" :value="member.id">{{ member.name }}</option></select></label>
-        <label>归属<select v-model="memberForm.relationScope"><option value="lineage">谱系</option><option value="cohort_guest">同级成员</option></select></label>
         <button class="primary-button" type="submit" :disabled="saving === 'member-new'">新增人物</button>
       </form>
 
@@ -204,7 +215,6 @@ onMounted(loadAll);
               <label>组员身份<select v-model="editForm.memberType"><option value="formal">正式组员</option><option value="probationary">预备组员</option></select></label>
               <label>去向<select v-model="editForm.destination"><option v-for="option in destinationOptions" :key="option[0]" :value="option[0]">{{ option[1] }}</option></select></label>
               <label>师傅<select v-model="editForm.mentorId"><option value="">无</option><option v-for="candidate in members.filter((item) => item.id !== member.id)" :key="candidate.id" :value="candidate.id">{{ candidate.name }}</option></select></label>
-              <label>归属<select v-model="editForm.relationScope"><option value="lineage">谱系</option><option value="cohort_guest">同级成员</option></select></label>
               <label class="wide-field">简介<textarea v-model="editForm.bio" maxlength="10000" rows="3"></textarea></label>
               <label>标签<input v-model.trim="editForm.tags" maxlength="1000" placeholder="以顿号或逗号分隔" /></label>
               <label>重点人物<select v-model="editForm.isFeatured"><option :value="false">否</option><option :value="true">是</option></select></label>
@@ -216,9 +226,10 @@ onMounted(loadAll);
             <div class="member-summary"><strong>{{ member.name }}</strong><span>{{ member.cohort_label ?? "未分级" }} · {{ member.status === "active" ? "在读" : "毕业" }} · {{ member.member_type === "probationary" ? "预备组员" : "正式组员" }} · {{ member.mentor_name ? `师从 ${member.mentor_name}` : "无师傅" }}</span></div>
             <div class="account-summary">
               <template v-if="member.account_id">
-                <span>{{ member.email }} · {{ member.account_role === "admin" ? "管理员" : "成员" }} · {{ member.account_status === "active" ? "已启用" : "已停用" }}</span>
+                <span>{{ member.email ?? member.phone ?? "姓名登录" }} · {{ member.account_role === "admin" ? "管理员" : "成员" }} · {{ member.account_status === "active" ? "已启用" : "已停用" }}</span>
                 <select :value="member.account_role ?? 'member'" aria-label="账号权限" :disabled="saving === `role-${member.account_id}`" @change="setAccountRole(member, ($event.target as HTMLSelectElement).value as 'member' | 'admin')"><option value="member">成员</option><option value="admin">管理员</option></select>
                 <button type="button" :disabled="saving === `account-${member.account_id}`" @click="setAccountStatus(member)">{{ member.account_status === "active" ? "停用" : "启用" }}</button>
+                <button type="button" :disabled="saving === `delete-account-${member.account_id}`" @click="deleteAccount(member)">删除账号</button>
                 <input v-model="resetPasswords[member.account_id]" type="password" minlength="8" maxlength="100" autocomplete="new-password" placeholder="输入新密码" aria-label="新密码" />
                 <button type="button" :disabled="saving === `password-${member.account_id}`" @click="resetPassword(member)">重置密码</button>
               </template>
@@ -247,10 +258,7 @@ onMounted(loadAll);
       <p v-if="!invites.length" class="empty-state">还没有邀请记录。</p>
     </div>
 
-    <div v-else class="audit-list">
-      <article v-for="log in logs" :key="log.id"><time>{{ new Date(log.created_at).toLocaleString("zh-CN") }}</time><strong>{{ log.actor_name }} · {{ log.action }}</strong><span>{{ log.target_type }} / {{ log.target_id }}</span><pre v-if="log.details_json !== '{}'">{{ displayDetails(log.details_json) }}</pre></article>
-      <p v-if="!logs.length" class="empty-state">还没有管理操作记录。</p>
-    </div>
+    <div v-else class="empty-state">请选择管理内容。</div>
   </section>
 </template>
 

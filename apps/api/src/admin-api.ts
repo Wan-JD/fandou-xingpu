@@ -27,13 +27,13 @@ type MemberRow = {
   version: number;
   account_id: string | null;
   email: string | null;
+  phone: string | null;
   account_role: "member" | "admin" | null;
   account_status: "active" | "disabled" | null;
 };
 
 const destinations = new Set(["big_tech", "postgraduate_985", "postgraduate_211", "startup", "further_study", "other"]);
 const personStatuses = new Set(["active", "archived"]);
-const relationScopes = new Set(["lineage", "cohort_guest"]);
 
 const error = (status: 400 | 401 | 403 | 404 | 409 | 503, code: string, message: string) =>
   new Response(JSON.stringify({ error: { code, message } }), {
@@ -60,7 +60,11 @@ async function mentorProblem(db: D1Database, personId: string, mentorId: string 
   if (mentorId === personId) return "MENTOR_SELF";
   const mentor = await db.prepare("SELECT id, relation_scope FROM people WHERE id = ?").bind(mentorId).first<{ id: string; relation_scope: string }>();
   if (!mentor) return "MENTOR_NOT_FOUND";
-  if (relationScope === "lineage" && mentor.relation_scope !== "lineage") return "MENTOR_NOT_LINEAGE";
+  if (relationScope === "lineage" && mentor.relation_scope !== "lineage") {
+    const adminMentor = await db.prepare("SELECT 1 FROM users WHERE person_id = ? AND role = 'admin' AND status = 'active'")
+      .bind(mentorId).first();
+    if (!adminMentor) return "MENTOR_NOT_LINEAGE";
+  }
   const cycle = await db.prepare(`
     WITH RECURSIVE descendants(id) AS (
       SELECT id FROM people WHERE mentor_id = ?
@@ -103,7 +107,7 @@ adminApi.get("/members", async (c) => {
       CASE WHEN COALESCE(p.cohort_year, c.year) IS NULL THEN NULL ELSE CAST(COALESCE(p.cohort_year, c.year) AS TEXT) || '级' END AS cohort_label,
       p.status, p.member_type, p.destination,
       p.mentor_id, mentor.name AS mentor_name, p.relation_scope, p.version,
-      u.id AS account_id, u.email, u.role AS account_role, u.status AS account_status
+      u.id AS account_id, u.email, u.phone, u.role AS account_role, u.status AS account_status
     FROM people p
     LEFT JOIN cohorts c ON c.id = p.cohort_id
     LEFT JOIN people mentor ON mentor.id = p.mentor_id
@@ -123,9 +127,9 @@ adminApi.post("/members", async (c) => {
   const memberType = body?.memberType === "probationary" ? "probationary" : "formal";
   const destination = body?.destination === null || body?.destination === "" ? null
     : typeof body?.destination === "string" && destinations.has(body.destination) ? body.destination : undefined;
-  const relationScope = typeof body?.relationScope === "string" && relationScopes.has(body.relationScope)
-    ? body.relationScope
-    : mentorId ? "lineage" : "cohort_guest";
+  // All current people belong to the same lineage. Keep accepting the legacy
+  // field from older clients, but never create a new cohort_guest record.
+  const relationScope = "lineage" as const;
   const cohortYear = rawCohortYear === null && legacyCohortId
     ? (await c.env.DB!.prepare("SELECT year FROM cohorts WHERE id = ?").bind(legacyCohortId).first<{ year: number | null }>())?.year ?? null
     : rawCohortYear;
@@ -217,10 +221,7 @@ adminApi.patch("/members/:id", async (c) => {
     if (destination === undefined) return error(400, "VALIDATION_ERROR", "去向无效");
     assignments.push("destination = ?"); values.push(destination); details.destination = destination;
   }
-  if ("relationScope" in body) {
-    if (typeof body.relationScope !== "string" || !relationScopes.has(body.relationScope)) return error(400, "VALIDATION_ERROR", "归属无效");
-    assignments.push("relation_scope = ?"); values.push(body.relationScope); details.relationScope = body.relationScope;
-  }
+  if ("relationScope" in body && body.relationScope !== "lineage" && body.relationScope !== "cohort_guest") return error(400, "VALIDATION_ERROR", "成员归属已统一为谱系");
   if ("mentorId" in body) {
     const mentorId = nullableId(body.mentorId);
     if (body.mentorId !== null && body.mentorId !== "" && !mentorId) return error(400, "VALIDATION_ERROR", "师傅编号无效");
@@ -228,19 +229,23 @@ adminApi.patch("/members/:id", async (c) => {
   }
   if (!assignments.length) return error(400, "NO_CHANGES", "没有可保存的修改");
   const resultingMentorId = "mentorId" in body ? nullableId(body.mentorId) : existing.mentor_id;
-  const resultingScope = "relationScope" in body ? body.relationScope as "lineage" | "cohort_guest" : existing.relation_scope;
+  const resultingScope = "lineage" as const;
+  if (existing.relation_scope !== "lineage") {
+    assignments.push("relation_scope = ?"); values.push("lineage"); details.relationScope = "lineage";
+  }
   const relationError = await mentorProblem(c.env.DB!, personId, resultingMentorId, resultingScope);
   if (relationError) return mentorError(relationError);
-  if (resultingScope === "cohort_guest") {
-    const child = await c.env.DB!.prepare("SELECT id FROM people WHERE mentor_id = ? AND relation_scope = 'lineage' LIMIT 1").bind(personId).first();
-    if (child) return mentorError("HAS_LINEAGE_STUDENTS");
-  }
   assignments.push("version = version + 1", "updated_at = datetime('now')");
   const actor = c.get("adminUser");
   try {
     const result = await c.env.DB!.prepare(`UPDATE people SET ${assignments.join(", ")} WHERE id = ? AND version = ?`)
       .bind(...values, personId, expectedVersion).run();
     if ((result.meta.changes ?? 0) === 0) return error(409, "VERSION_CONFLICT", "资料已被其他管理员更新，请刷新后重试");
+    if ("name" in body) {
+      const newName = text(body.name);
+      await c.env.DB!.prepare("UPDATE users SET display_name = ?, updated_at = datetime('now') WHERE person_id = ?")
+        .bind(newName, personId).run();
+    }
     await audit(c.env.DB!, actor.id, "member.update", "person", personId, { ...details, fromVersion: expectedVersion }).run();
   } catch (cause) {
     const code = String(cause).match(/MENTOR_(SELF|NOT_FOUND|NOT_LINEAGE|CYCLE)|SCOPE_MENTOR_CONFLICT|HAS_LINEAGE_STUDENTS/)?.[0];
@@ -337,6 +342,27 @@ adminApi.patch("/accounts/:id/status", async (c) => {
     audit(c.env.DB!, actor.id, `account.${status}`, "user", id),
   ]);
   return c.json({ data: { id, status } });
+});
+
+// Deleting an account deliberately leaves its person node in the tree. This
+// removes credentials and sessions so a new account can be bound later.
+adminApi.delete("/accounts/:id", async (c) => {
+  const id = c.req.param("id");
+  const account = await c.env.DB!.prepare("SELECT id, role, status, person_id FROM users WHERE id = ?")
+    .bind(id).first<{ id: string; role: "member" | "admin"; status: "active" | "disabled"; person_id: string | null }>();
+  if (!account) return error(404, "ACCOUNT_NOT_FOUND", "账号不存在");
+  const actor = c.get("adminUser");
+  if (id === actor.id) return error(409, "CANNOT_DELETE_SELF", "不能删除自己的账号");
+  if (account.role === "admin" && account.status === "active") {
+    const remaining = await c.env.DB!.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND status = 'active' AND id <> ?")
+      .bind(id).first<{ count: number }>();
+    if (Number(remaining?.count ?? 0) === 0) return error(409, "LAST_ADMIN", "不能删除最后一位管理员");
+  }
+  await c.env.DB!.batch([
+    c.env.DB!.prepare("DELETE FROM users WHERE id = ?").bind(id),
+    audit(c.env.DB!, actor.id, "account.delete", "user", id, { personId: account.person_id }),
+  ]);
+  return c.body(null, 204);
 });
 
 adminApi.patch("/accounts/:id/role", async (c) => {
