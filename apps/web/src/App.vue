@@ -15,12 +15,12 @@ type Achievement = { id: string; kind: "achievement" | "honor"; title: string; c
 type Attachment = { id: string; originalName: string; mimeType: string; size: number; category: string; visibility: string; url: string | null };
 type ProfileLink = { label: string; url: string };
 type UploadCategory = "avatar" | "resume" | "photo" | "certificate";
-type Person = { id: string; name: string; nickname: string | null; avatarUrl: string | null; cohort: Cohort | null; relationScope: "lineage" | "cohort_guest"; isFeatured: boolean; status: Status; memberType?: MembershipType | null; destination: Destination | null; mentorId: string | null; depth: number | null; directStudentIds: string[]; role: string; joinedAt: string; tags: string[]; bio: string; contactEmail?: string | null; education?: string | null; experience?: string | null; skills?: string[]; links?: ProfileLink[]; resume?: Attachment | null; version?: number; mentor?: Person | null; students?: Person[]; achievements?: Achievement[]; attachments?: Attachment[]; featuredNote?: string | null };
+type Person = { id: string; name: string; avatarUrl: string | null; cohort: Cohort | null; relationScope: "lineage" | "cohort_guest"; isFeatured: boolean; status: Status; memberType?: MembershipType | null; destination: Destination | null; mentorId: string | null; depth: number | null; directStudentIds: string[]; role: string; joinedAt: string; tags: string[]; bio: string; contactEmail?: string | null; education?: string | null; experience?: string | null; skills?: string[]; links?: ProfileLink[]; resume?: Attachment | null; version?: number; mentor?: Person | null; students?: Person[]; achievements?: Achievement[]; attachments?: Attachment[]; featuredNote?: string | null };
 type Edge = { id: string; mentorId: string; studentId: string };
 type Tree = { rootPersonId: string | null; nodes: Person[]; edges: Edge[]; generatedAt: string };
 type LinkSegment = { id: string; mentorId: string; studentId: string; path: string; x1: number; y1: number; x2: number; y2: number; crossCohort: boolean };
 type Tone = "gold" | "aqua" | "fog";
-type SessionUser = { id: string; email: string; displayName: string; personId: string; role: "member" | "admin" };
+type SessionUser = { id: string; email?: string | null; phone?: string | null; displayName: string; personId: string; role: "member" | "admin"; mustChangePassword?: boolean };
 type AuthMode = "login" | "register";
 
 const emptyTree: Tree = { rootPersonId: null, nodes: [], edges: [], generatedAt: new Date(0).toISOString() };
@@ -53,12 +53,16 @@ const authOpen = ref(false);
 const authMode = ref<AuthMode>("login");
 const authLoading = ref(false);
 const authError = ref<string | null>(null);
-const authForm = ref({ email: "", password: "" });
+const authForm = ref({ identifier: "", password: "" });
+const passwordChangeOpen = ref(false);
+const passwordChangeSaving = ref(false);
+const passwordChangeError = ref("");
+const passwordChangeForm = ref({ currentPassword: "", newPassword: "", confirmPassword: "" });
 const profileEditing = ref(false);
 const profileSaving = ref(false);
 const profileError = ref<string | null>(null);
 const profileSaved = ref(false);
-const profileForm = ref<{ nickname: string; bio: string; destination: Destination | ""; memberType: MembershipType | ""; contactEmail: string; education: string; experience: string; skills: string; links: string }>({ nickname: "", bio: "", destination: "", memberType: "", contactEmail: "", education: "", experience: "", skills: "", links: "" });
+const profileForm = ref<{ bio: string; destination: Destination | ""; memberType: MembershipType | ""; contactEmail: string; education: string; experience: string; skills: string; links: string }>({ bio: "", destination: "", memberType: "", contactEmail: "", education: "", experience: "", skills: "", links: "" });
 const achievementForm = ref({ kind: "achievement" as "achievement" | "honor", title: "", content: "" });
 const achievementSaving = ref(false);
 const uploadSaving = ref(false);
@@ -179,7 +183,7 @@ const destinationClass = (person: Person) => person.destination ? `destination-$
 const matchingIds = computed(() => {
   const text = query.value.trim().toLocaleLowerCase();
   if (!text) return new Set(people.value.map((person) => person.id));
-  return new Set(people.value.filter((person) => [person.name, person.nickname ?? "", person.role, formatCohort(person.cohort), person.status === "archived" ? "毕业" : "在读", person.memberType ? membershipLabels[person.memberType] : "", person.destination ? destinationLabels[person.destination] : "", ...person.tags].join(" ").toLocaleLowerCase().includes(text)).map((person) => person.id));
+  return new Set(people.value.filter((person) => [person.name, person.role, formatCohort(person.cohort), person.status === "archived" ? "毕业" : "在读", person.memberType ? membershipLabels[person.memberType] : "", person.destination ? destinationLabels[person.destination] : "", ...person.tags].join(" ").toLocaleLowerCase().includes(text)).map((person) => person.id));
 });
 const detailRouteId = computed(() => {
   const match = pathname.value.match(/^\/person\/([^/]+)/);
@@ -246,7 +250,7 @@ function setNodeRef(id: string, element: Element | null) {
 function normaliseNode(node: Record<string, unknown>): Person {
   if (typeof node.id !== "string" || !node.id.trim() || typeof node.name !== "string" || !node.name.trim()) throw new Error("invalid person");
   const source = {
-    id: node.id, name: node.name, nickname: null, avatarUrl: null,
+    id: node.id, name: node.name, avatarUrl: null,
     cohort: null, relationScope: "cohort_guest" as const, isFeatured: false, status: "active" as const, memberType: null, destination: null,
     mentorId: null, depth: null, directStudentIds: [], role: "星谱成员", joinedAt: "", tags: [], bio: "",
   };
@@ -259,10 +263,9 @@ function normaliseNode(node: Record<string, unknown>): Person {
   const destination = isDestination(node.destination) ? node.destination : null;
   const rawMemberType = node.memberType;
   const memberType = isMembershipType(rawMemberType) ? rawMemberType : rawMemberType === "正式组员" ? "formal" : rawMemberType === "预备组员" ? "probationary" : null;
-  const nickname = Object.prototype.hasOwnProperty.call(node, "nickname") ? (node.nickname == null ? null : String(node.nickname)) : source.nickname;
   const skills = Array.isArray(node.skills) ? node.skills.filter((skill): skill is string => typeof skill === "string" && Boolean(skill.trim())) : [];
   const profileLinks = Array.isArray(node.links) ? node.links.filter((link): link is ProfileLink => Boolean(link && typeof link === "object" && typeof (link as ProfileLink).label === "string" && typeof (link as ProfileLink).url === "string")) : [];
-  return { ...source, ...node, id: source.id, name: source.name, cohort, destination, memberType, version: Number(node.version ?? 1), mentorId: node.mentorId == null ? null : String(node.mentorId), directStudentIds, nickname, avatarUrl: node.avatarUrl == null ? null : String(node.avatarUrl), role: String(node.role ?? source.role), joinedAt: String(node.joinedAt ?? ""), tags: Array.isArray(node.tags) ? node.tags.map(String) : [], bio: String(node.bio ?? ""), contactEmail: node.contactEmail == null ? null : String(node.contactEmail), education: node.education == null ? null : String(node.education), experience: node.experience == null ? null : String(node.experience), skills, links: profileLinks } as Person;
+  return { ...source, ...node, id: source.id, name: source.name, cohort, destination, memberType, version: Number(node.version ?? 1), mentorId: node.mentorId == null ? null : String(node.mentorId), directStudentIds, avatarUrl: node.avatarUrl == null ? null : String(node.avatarUrl), role: String(node.role ?? source.role), joinedAt: String(node.joinedAt ?? ""), tags: Array.isArray(node.tags) ? node.tags.map(String) : [], bio: String(node.bio ?? ""), contactEmail: node.contactEmail == null ? null : String(node.contactEmail), education: node.education == null ? null : String(node.education), experience: node.experience == null ? null : String(node.experience), skills, links: profileLinks } as Person;
 }
 async function loadTree() {
   loading.value = true;
@@ -300,6 +303,8 @@ function clearSession() {
   sessionUser.value = null;
   localStorage.removeItem("fandou-session");
   profileEditing.value = false;
+  passwordChangeOpen.value = false;
+  passwordChangeForm.value = { currentPassword: "", newPassword: "", confirmPassword: "" };
 }
 async function loadSession() {
   const token = sessionToken.value;
@@ -314,6 +319,7 @@ async function loadSession() {
     const payload = await response.json() as { data?: { user?: SessionUser } };
     if (!payload.data?.user) throw new Error("invalid session");
     sessionUser.value = payload.data.user;
+    if (payload.data.user.mustChangePassword) passwordChangeOpen.value = true;
   } catch {
     clearSession();
   } finally {
@@ -323,7 +329,7 @@ async function loadSession() {
 function setAuthMode(mode: AuthMode) {
   authMode.value = mode;
   authError.value = null;
-  if (mode === "login") authForm.value = { email: "", password: "" };
+  if (mode === "login") authForm.value = { identifier: "", password: "" };
 }
 function openAuth(mode: AuthMode = "login") {
   setAuthMode(mode);
@@ -347,12 +353,31 @@ async function submitAuth() {
     sessionUser.value = payload.data.user;
     localStorage.setItem("fandou-session", payload.data.token);
     authOpen.value = false;
+    if (payload.data.user.mustChangePassword) {
+      passwordChangeForm.value.currentPassword = authForm.value.password;
+      passwordChangeOpen.value = true;
+    }
     navigate(`/person/${encodeURIComponent(payload.data.user.personId)}`);
   } catch (error) {
     authError.value = error instanceof Error ? error.message : "暂时无法连接账号服务";
   } finally {
     authLoading.value = false;
   }
+}
+async function changePassword() {
+  if (!sessionToken.value || passwordChangeSaving.value) return;
+  if (passwordChangeForm.value.newPassword.length < 8) { passwordChangeError.value = "新密码至少 8 位"; return; }
+  if (passwordChangeForm.value.newPassword !== passwordChangeForm.value.confirmPassword) { passwordChangeError.value = "两次输入的新密码不一致"; return; }
+  passwordChangeSaving.value = true;
+  passwordChangeError.value = "";
+  try {
+    const response = await fetch("/api/session/password", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${sessionToken.value}` }, body: JSON.stringify({ currentPassword: passwordChangeForm.value.currentPassword, newPassword: passwordChangeForm.value.newPassword }) });
+    if (!response.ok) throw new Error(await apiErrorMessage(response, "密码修改失败"));
+    passwordChangeOpen.value = false;
+    passwordChangeForm.value = { currentPassword: "", newPassword: "", confirmPassword: "" };
+    if (sessionUser.value) sessionUser.value = { ...sessionUser.value, mustChangePassword: false };
+  } catch (error) { passwordChangeError.value = error instanceof Error ? error.message : "密码修改失败"; }
+  finally { passwordChangeSaving.value = false; }
 }
 async function logout() {
   const token = sessionToken.value;
@@ -369,7 +394,7 @@ function openMyProfile() {
 function startProfileEdit() {
   if (!detail.value || !isOwnDetail.value) return;
   profileForm.value = {
-    nickname: detail.value.nickname ?? "", bio: detail.value.bio, destination: detail.value.destination ?? "", memberType: detail.value.memberType ?? "",
+    bio: detail.value.bio, destination: detail.value.destination ?? "", memberType: detail.value.memberType ?? "",
     contactEmail: detail.value.contactEmail ?? "", education: detail.value.education ?? "", experience: detail.value.experience ?? "",
     skills: (detail.value.skills ?? []).join(", "), links: (detail.value.links ?? []).map((link) => `${link.label} | ${link.url}`).join("\n"),
   };
@@ -394,7 +419,6 @@ async function saveProfile() {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({
-        nickname: profileForm.value.nickname.trim() || null,
         bio: profileForm.value.bio.trim(), destination: profileForm.value.destination || null,
         memberType: profileForm.value.memberType || null,
         contactEmail: profileForm.value.contactEmail.trim() || null,
@@ -414,7 +438,7 @@ async function saveProfile() {
     if (!payload.data) throw new Error("资料响应为空");
     const updated = normaliseNode({ ...person, ...payload.data, id: person.id });
     detailPerson.value = updated;
-    tree.value.nodes = tree.value.nodes.map((node) => node.id === updated.id ? { ...node, nickname: updated.nickname, bio: updated.bio, destination: updated.destination, memberType: updated.memberType, version: updated.version, contactEmail: updated.contactEmail, education: updated.education, experience: updated.experience, skills: updated.skills, links: updated.links } : node);
+    tree.value.nodes = tree.value.nodes.map((node) => node.id === updated.id ? { ...node, bio: updated.bio, destination: updated.destination, memberType: updated.memberType, version: updated.version, contactEmail: updated.contactEmail, education: updated.education, experience: updated.experience, skills: updated.skills, links: updated.links } : node);
     profileEditing.value = false;
     profileSaved.value = true;
   } catch (error) {
@@ -834,7 +858,6 @@ onUnmounted(() => {
             <StarAvatar :name="detail.name" :avatar-url="detail.avatarUrl" :tone="toneOf(detail)" size="xl" />
           </div>
           <h1>{{ detail.name }}</h1>
-          <p v-if="detail.nickname" class="detail-nickname">{{ detail.nickname }}</p>
           <p class="detail-role">{{ detail.role }}</p>
           <span v-if="detail.destination" class="destination-badge detail-destination" :class="destinationClass(detail)">去向 · {{ destinationLabel(detail) }}</span>
           <span v-if="detail.memberType" class="membership-badge" :class="`membership-${detail.memberType}`">{{ membershipLabel(detail) }}</span>
@@ -847,10 +870,6 @@ onUnmounted(() => {
           <article v-if="isOwnDetail && profileEditing" class="detail-section profile-editor">
             <span class="section-label">编辑我的资料</span>
             <form @submit.prevent="saveProfile">
-              <label class="form-field">
-                <span>昵称</span>
-                <input v-model="profileForm.nickname" type="text" maxlength="100" autocomplete="nickname" placeholder="可留空" />
-              </label>
               <label class="form-field">
                 <span>简介</span>
                 <textarea v-model="profileForm.bio" maxlength="10000" rows="5" placeholder="可留空"></textarea>
@@ -914,6 +933,12 @@ onUnmounted(() => {
                 </div>
                 <p v-if="uploadError" class="form-error" role="alert">{{ uploadError }}</p>
               </div>
+              <div class="content-editor profile-achievement-editor">
+                <span class="section-label">新增事迹或荣誉</span>
+                <div class="content-editor-row"><select v-model="achievementForm.kind"><option value="achievement">事迹</option><option value="honor">荣誉</option></select><input v-model.trim="achievementForm.title" maxlength="200" placeholder="标题" /></div>
+                <textarea v-model.trim="achievementForm.content" maxlength="20000" rows="3" placeholder="写下这段经历"></textarea>
+                <div class="form-actions"><button class="primary-command" type="button" :disabled="achievementSaving || !achievementForm.title.trim() || !achievementForm.content.trim()" @click="addAchievement">{{ achievementSaving ? '保存中…' : '添加记录' }}</button></div>
+              </div>
               <p v-if="profileError" class="form-error" role="alert">{{ profileError }}</p>
               <div class="form-actions">
                 <button class="secondary-command" type="button" :disabled="profileSaving" @click="cancelProfileEdit">结束编辑</button>
@@ -921,6 +946,7 @@ onUnmounted(() => {
               </div>
             </form>
           </article>
+          <template v-else>
           <article class="detail-section">
             <span class="section-label">{{ detailSectionNumber("bio") }} / 简介</span>
             <p v-if="detail.bio" class="detail-copy">{{ detail.bio }}</p>
@@ -960,15 +986,11 @@ onUnmounted(() => {
                 <button v-if="isOwnDetail && sessionToken && profileEditing" class="attachment-remove" type="button" :disabled="Boolean(attachmentBusyId)" @click="removeAttachment(item)">删除</button>
               </div>
             </div>
-            <div v-else-if="isOwnDetail && profileEditing" class="empty-detail"><span>✦</span><p>这里还没有记录，可以从下方写下第一段经历。</p></div>
-            <form v-if="isOwnDetail && sessionToken && profileEditing" class="content-editor" @submit.prevent="addAchievement">
-              <div class="content-editor-row"><select v-model="achievementForm.kind"><option value="achievement">事迹</option><option value="honor">荣誉</option></select><input v-model.trim="achievementForm.title" maxlength="200" placeholder="标题" required /></div>
-              <textarea v-model.trim="achievementForm.content" maxlength="20000" rows="3" placeholder="写下这段经历" required></textarea>
-              <div class="form-actions"><button class="primary-command" type="submit" :disabled="achievementSaving">{{ achievementSaving ? '保存中…' : '添加记录' }}</button></div>
-            </form>
+            <div v-else-if="!detailAchievements.length && !profileFileAttachments.length" class="empty-detail"><span>✦</span><p>这颗星暂时没有公开记录。</p></div>
             <p v-if="attachmentError" class="form-error" role="alert">{{ attachmentError }}</p>
           </article>
           <InvitePanel v-if="isOwnDetail && sessionToken" :mentor-id="detail.id" :mentor-name="detail.name" :session-token="sessionToken" />
+          </template>
         </section>
       </div>
       <div v-else class="state-message">
@@ -990,8 +1012,8 @@ onUnmounted(() => {
         </div>
         <form v-if="authMode === 'login'" class="auth-form" @submit.prevent="submitAuth">
           <label class="form-field">
-            <span>邮箱</span>
-            <input v-model="authForm.email" type="email" maxlength="254" autocomplete="email" required />
+            <span>邮箱、手机号或姓名</span>
+            <input v-model.trim="authForm.identifier" type="text" maxlength="254" autocomplete="username" required />
           </label>
           <label class="form-field">
             <span>密码</span>
@@ -1005,6 +1027,20 @@ onUnmounted(() => {
           <p>新成员需要通过师傅发出的专属邀请链接加入。邀请码只能使用一次，注册后会自动建立师徒关系。</p>
           <button class="secondary-command auth-submit" type="button" @click="setAuthMode('login')">已有账号，返回登录</button>
         </div>
+      </section>
+    </div>
+    <div v-if="passwordChangeOpen" class="modal-backdrop password-change-backdrop">
+      <section class="auth-dialog password-change-dialog" role="dialog" aria-modal="true" aria-labelledby="password-change-title">
+        <span class="section-label">ACCOUNT SECURITY</span>
+        <h2 id="password-change-title">首次登录，请设置新密码</h2>
+        <p class="detail-copy">这是师傅创建账号时生成的初始密码。完成修改后才能继续使用账号。</p>
+        <form class="auth-form" @submit.prevent="changePassword">
+          <label class="form-field"><span>当前密码</span><input v-model="passwordChangeForm.currentPassword" type="password" minlength="6" maxlength="100" autocomplete="current-password" required /></label>
+          <label class="form-field"><span>新密码</span><input v-model="passwordChangeForm.newPassword" type="password" minlength="8" maxlength="100" autocomplete="new-password" required /></label>
+          <label class="form-field"><span>确认新密码</span><input v-model="passwordChangeForm.confirmPassword" type="password" minlength="8" maxlength="100" autocomplete="new-password" required /></label>
+          <p v-if="passwordChangeError" class="form-error" role="alert">{{ passwordChangeError }}</p>
+          <button class="primary-command auth-submit" type="submit" :disabled="passwordChangeSaving">{{ passwordChangeSaving ? "保存中" : "设置新密码" }}</button>
+        </form>
       </section>
     </div>
   </div>

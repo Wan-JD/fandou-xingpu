@@ -19,8 +19,8 @@ export interface CohortSummary {
 export interface PersonSummary {
   id: Id;
   name: string;
-  nickname: string | null;
   avatarUrl: string | null;
+  cohortYear: number | null;
   cohort: CohortSummary | null;
   relationScope: RelationScope;
   isFeatured: boolean;
@@ -145,7 +145,6 @@ export interface TreeQuery {
 
 export interface PersonUpdateInput {
   bio?: string;
-  nickname?: string | null;
   destination?: Destination | null;
   contactEmail?: string | null;
   education?: string | null;
@@ -157,10 +156,12 @@ export interface PersonUpdateInput {
 
 export interface SessionUser {
   id: Id;
-  email: string;
+  email: string | null;
+  phone: string | null;
   displayName: string;
   personId: Id;
   role: "member" | "admin";
+  mustChangePassword: boolean;
 }
 
 export interface SessionData {

@@ -22,7 +22,6 @@ export const personSearchQuerySchema = z.object({
 
 export const personUpdateSchema = z.object({
   bio: z.string().trim().max(10_000).optional(),
-  nickname: z.string().trim().max(100).nullable().optional(),
   destination: destinationSchema.nullable().optional(),
   memberType: memberTypeSchema.nullable().optional(),
   contactEmail: z.string().trim().email().max(254).nullable().optional(),
@@ -34,9 +33,11 @@ export const personUpdateSchema = z.object({
 }).strict();
 
 export const sessionLoginSchema = z.object({
-  email: z.string().trim().email().max(254),
+  identifier: z.string().trim().min(1).max(254).optional(),
+  // Kept for clients deployed before the identifier field was introduced.
+  email: z.string().trim().max(254).optional(),
   password: z.string().min(6).max(100),
-}).strict();
+}).strict().refine((value) => Boolean(value.identifier || value.email), { message: "请输入邮箱、手机号或姓名", path: ["identifier"] });
 
 export const sessionRegisterSchema = z.object({
   displayName: z.string().trim().min(2).max(50),

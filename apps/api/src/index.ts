@@ -18,6 +18,21 @@ app.use("/api/*", async (c, next) => cors({
   allowHeaders: ["Content-Type", "Authorization"],
 })(c, next));
 
+// Accounts created on another member's behalf must rotate their temporary password
+// before any authenticated write is accepted.
+app.use("/api/*", async (c, next) => {
+  if (c.req.method === "GET" || c.req.method === "OPTIONS" || c.req.path === "/api/session/password" || (c.req.method === "DELETE" && c.req.path === "/api/session")) {
+    return next();
+  }
+  const authorization = c.req.header("Authorization");
+  if (!authorization || !c.env?.DB) return next();
+  const session = await persistence(c.env.DB).session(authorization);
+  if (session?.user.mustChangePassword) {
+    return c.json({ error: { code: "PASSWORD_CHANGE_REQUIRED", message: "首次登录需要先修改初始密码" } }, 403);
+  }
+  return next();
+});
+
 const errorResponse = (message: string, code: string, status: 400 | 404 | 500 | 503, fieldErrors?: Record<string, string[]>) =>
   new Response(JSON.stringify({ error: { code, message, ...(fieldErrors ? { fieldErrors } : {}) } }), {
     status,

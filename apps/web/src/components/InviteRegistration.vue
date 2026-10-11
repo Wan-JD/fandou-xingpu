@@ -10,8 +10,8 @@ const submitting = ref(false);
 const error = ref("");
 const mentor = ref<Mentor | null>(null);
 const name = ref("");
-const nickname = ref("");
 const email = ref("");
+const phone = ref("");
 const password = ref("");
 const acceptedName = ref("");
 const needsToken = ref(!props.token);
@@ -21,6 +21,7 @@ const errorText = (code?: string) => ({
   INVITE_NOT_FOUND: "没有找到这枚邀请，请检查链接是否完整。",
   INVITE_ALREADY_ACCEPTED: "这枚邀请已经被使用。",
   EMAIL_ALREADY_REGISTERED: "这个邮箱已经注册，请更换邮箱或直接登录。",
+  IDENTIFIER_ALREADY_REGISTERED: "这个邮箱或手机号已经注册，请更换后重试。",
 }[code ?? ""] ?? "邀请暂时无法读取，请稍后重试。");
 
 async function loadInvite() {
@@ -46,14 +47,14 @@ async function loadInvite() {
 }
 
 async function acceptInvite() {
-  if (!name.value.trim()) return;
+  if (!name.value.trim() || (!email.value.trim() && !phone.value.trim()) || password.value.length < 6) return;
   submitting.value = true;
   error.value = "";
   try {
     const response = await fetch(`/api/invites/${encodeURIComponent(activeToken.value)}/accept`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: name.value, nickname: nickname.value, email: email.value, password: password.value }),
+      body: JSON.stringify({ name: name.value, email: email.value, phone: phone.value || undefined, password: password.value }),
     });
     const payload = await response.json() as { data?: { member: { name: string }; mentor: Mentor; session: { token: string } }; error?: { code?: string } };
     if (!response.ok || !payload.data) throw new Error(errorText(payload.error?.code));
@@ -111,10 +112,10 @@ onMounted(loadInvite);
       <h1>接受 {{ mentor?.name }} 的邀请</h1>
       <p>{{ mentor?.cohort?.label ?? "星谱成员" }} · 注册后将自动建立师徒关系</p>
       <label>姓名<input v-model.trim="name" required maxlength="100" autocomplete="name" /></label>
-      <label>昵称（选填）<input v-model.trim="nickname" maxlength="100" /></label>
-      <label>邮箱<input v-model.trim="email" required maxlength="254" type="email" autocomplete="email" /></label>
+      <label>邮箱（邮箱或手机号至少填写一项）<input v-model.trim="email" maxlength="254" type="email" autocomplete="email" /></label>
+      <label>手机号（可选）<input v-model.trim="phone" maxlength="30" type="tel" autocomplete="tel" /></label>
       <label>密码<input v-model="password" required minlength="6" maxlength="100" type="password" autocomplete="new-password" /></label>
-      <button class="register-action" type="submit" :disabled="submitting || !name || !email || password.length < 6">{{ submitting ? "正在建立账号" : "接受邀请并注册" }}</button>
+      <button class="register-action" type="submit" :disabled="submitting || !name || (!email && !phone) || password.length < 6">{{ submitting ? "正在建立账号" : "接受邀请并注册" }}</button>
     </form>
   </section>
 </template>

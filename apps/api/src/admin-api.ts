@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { createPasswordFields, normalizeEmail } from "./session.ts";
+import { createPasswordFields, normalizeEmail, normalizePhone } from "./session.ts";
 import { persistence } from "./persistence.ts";
 import type { Env } from "./types.ts";
 
@@ -12,13 +12,13 @@ type MemberRow = {
   name: string;
   cohort_id: string | null;
   cohort_label: string | null;
+  cohort_year: number | null;
   status: "active" | "archived";
   member_type: "formal" | "probationary";
   destination: string | null;
   mentor_id: string | null;
   mentor_name: string | null;
   relation_scope: "lineage" | "cohort_guest";
-  nickname: string | null;
   bio: string;
   role: string;
   is_featured: number;
@@ -98,15 +98,17 @@ adminApi.use("/*", async (c, next) => {
 
 adminApi.get("/members", async (c) => {
   const rows = await c.env.DB!.prepare(`
-    SELECT p.id, p.name, p.nickname, p.bio, p.role, p.is_featured, p.featured_note, p.tags_json,
-      p.cohort_id, c.label AS cohort_label, p.status, p.member_type, p.destination,
+    SELECT p.id, p.name, p.bio, p.role, p.is_featured, p.featured_note, p.tags_json,
+      p.cohort_id, COALESCE(p.cohort_year, c.year) AS cohort_year,
+      CASE WHEN COALESCE(p.cohort_year, c.year) IS NULL THEN NULL ELSE CAST(COALESCE(p.cohort_year, c.year) AS TEXT) || '级' END AS cohort_label,
+      p.status, p.member_type, p.destination,
       p.mentor_id, mentor.name AS mentor_name, p.relation_scope, p.version,
       u.id AS account_id, u.email, u.role AS account_role, u.status AS account_status
     FROM people p
     LEFT JOIN cohorts c ON c.id = p.cohort_id
     LEFT JOIN people mentor ON mentor.id = p.mentor_id
     LEFT JOIN users u ON u.person_id = p.id
-    ORDER BY c.sort_order, COALESCE(c.year, 9999), p.name, p.id
+    ORDER BY COALESCE(p.cohort_year, c.year, 9999), p.name, p.id
   `).all<MemberRow>();
   return c.json({ data: rows.results, meta: { total: rows.results.length } });
 });
@@ -114,7 +116,8 @@ adminApi.get("/members", async (c) => {
 adminApi.post("/members", async (c) => {
   const body = await c.req.json().catch(() => null) as Record<string, unknown> | null;
   const name = text(body?.name);
-  const cohortId = nullableId(body?.cohortId);
+  const legacyCohortId = nullableId(body?.cohortId);
+  const rawCohortYear = body?.cohortYear === null || body?.cohortYear === undefined || body?.cohortYear === "" ? null : Number(body?.cohortYear);
   const mentorId = nullableId(body?.mentorId);
   const status = typeof body?.status === "string" && personStatuses.has(body.status) ? body.status : "active";
   const memberType = body?.memberType === "probationary" ? "probationary" : "formal";
@@ -123,10 +126,10 @@ adminApi.post("/members", async (c) => {
   const relationScope = typeof body?.relationScope === "string" && relationScopes.has(body.relationScope)
     ? body.relationScope
     : mentorId ? "lineage" : "cohort_guest";
-  if (!name || destination === undefined) return error(400, "VALIDATION_ERROR", "请检查姓名和去向");
-  if (cohortId && !await c.env.DB!.prepare("SELECT id FROM cohorts WHERE id = ?").bind(cohortId).first()) {
-    return error(404, "COHORT_NOT_FOUND", "指定级别不存在");
-  }
+  const cohortYear = rawCohortYear === null && legacyCohortId
+    ? (await c.env.DB!.prepare("SELECT year FROM cohorts WHERE id = ?").bind(legacyCohortId).first<{ year: number | null }>())?.year ?? null
+    : rawCohortYear;
+  if (!name || destination === undefined || (cohortYear !== null && (!Number.isInteger(cohortYear) || cohortYear < 1900 || cohortYear > 2200))) return error(400, "VALIDATION_ERROR", "请检查姓名、级别年份和去向");
   const id = `person-${crypto.randomUUID()}`;
   const relationError = await mentorProblem(c.env.DB!, id, mentorId, relationScope as "lineage" | "cohort_guest");
   if (relationError) return mentorError(relationError);
@@ -135,11 +138,11 @@ adminApi.post("/members", async (c) => {
     await c.env.DB!.batch([
       c.env.DB!.prepare(`
         INSERT INTO people (
-          id, name, nickname, mentor_id, cohort_id, relation_scope, bio,
+          id, name, nickname, mentor_id, cohort_id, cohort_year, relation_scope, bio,
           is_featured, status, member_type, destination, role, joined_at, tags_json
-        ) VALUES (?, ?, NULL, ?, ?, ?, '', 0, ?, ?, ?, '星谱成员', date('now'), '[]')
-      `).bind(id, name, mentorId, cohortId, relationScope, status, memberType, destination),
-      audit(c.env.DB!, actor.id, "member.create", "person", id, { name, cohortId, mentorId, status, memberType, destination, relationScope }),
+        ) VALUES (?, ?, NULL, ?, NULL, ?, ?, '', 0, ?, ?, ?, '星谱成员', date('now'), '[]')
+      `).bind(id, name, mentorId, cohortYear, relationScope, status, memberType, destination),
+      audit(c.env.DB!, actor.id, "member.create", "person", id, { name, cohortYear, mentorId, status, memberType, destination, relationScope }),
     ]);
   } catch (cause) {
     const code = String(cause).match(/MENTOR_(SELF|NOT_FOUND|NOT_LINEAGE|CYCLE)|SCOPE_MENTOR_CONFLICT|HAS_LINEAGE_STUDENTS/)?.[0];
@@ -166,11 +169,6 @@ adminApi.patch("/members/:id", async (c) => {
     if (!name) return error(400, "VALIDATION_ERROR", "姓名不能为空且不能超过 100 字");
     assignments.push("name = ?"); values.push(name); details.name = name;
   }
-  if ("nickname" in body) {
-    const nickname = body.nickname === null || body.nickname === "" ? null : text(body.nickname);
-    if (body.nickname !== null && body.nickname !== "" && !nickname) return error(400, "VALIDATION_ERROR", "昵称不能超过 100 字");
-    assignments.push("nickname = ?"); values.push(nickname); details.nickname = nickname;
-  }
   if ("bio" in body) {
     if (typeof body.bio !== "string" || body.bio.length > 10000) return error(400, "VALIDATION_ERROR", "简介不能超过 10000 字");
     assignments.push("bio = ?"); values.push(body.bio.trim()); details.bio = body.bio.trim();
@@ -196,13 +194,14 @@ adminApi.patch("/members/:id", async (c) => {
     const tags = [...new Set(body.tags.map((tag) => (tag as string).trim()))];
     assignments.push("tags_json = ?"); values.push(JSON.stringify(tags)); details.tags = tags;
   }
-  if ("cohortId" in body) {
-    const cohortId = nullableId(body.cohortId);
-    if (body.cohortId !== null && body.cohortId !== "" && !cohortId) return error(400, "VALIDATION_ERROR", "级别编号无效");
-    if (cohortId && !await c.env.DB!.prepare("SELECT id FROM cohorts WHERE id = ?").bind(cohortId).first()) {
-      return error(404, "COHORT_NOT_FOUND", "指定级别不存在");
-    }
-    assignments.push("cohort_id = ?"); values.push(cohortId); details.cohortId = cohortId;
+  if ("cohortYear" in body || "cohortId" in body) {
+    const legacyCohortId = nullableId(body.cohortId);
+    const rawCohortYear = body.cohortYear === null || body.cohortYear === undefined || body.cohortYear === "" ? null : Number(body.cohortYear);
+    const cohortYear = rawCohortYear === null && legacyCohortId
+      ? (await c.env.DB!.prepare("SELECT year FROM cohorts WHERE id = ?").bind(legacyCohortId).first<{ year: number | null }>())?.year ?? null
+      : rawCohortYear;
+    if (cohortYear !== null && (!Number.isInteger(cohortYear) || cohortYear < 1900 || cohortYear > 2200)) return error(400, "VALIDATION_ERROR", "级别年份无效");
+    assignments.push("cohort_year = ?", "cohort_id = NULL"); values.push(cohortYear); details.cohortYear = cohortYear;
   }
   if ("status" in body) {
     if (typeof body.status !== "string" || !personStatuses.has(body.status)) return error(400, "VALIDATION_ERROR", "人物状态无效");
@@ -253,11 +252,13 @@ adminApi.patch("/members/:id", async (c) => {
 
 adminApi.get("/cohorts", async (c) => {
   const rows = await c.env.DB!.prepare(`
-    SELECT c.id, c.label, c.year, c.sort_order, c.description, COUNT(p.id) AS member_count
-    FROM cohorts c LEFT JOIN people p ON p.cohort_id = c.id
-    GROUP BY c.id ORDER BY COALESCE(c.year, 9999), c.sort_order, c.id
-  `).all();
-  return c.json({ data: rows.results, meta: { total: rows.results.length } });
+    SELECT COALESCE(p.cohort_year, c.year) AS year, COUNT(p.id) AS member_count
+    FROM people p LEFT JOIN cohorts c ON c.id = p.cohort_id
+    WHERE COALESCE(p.cohort_year, c.year) IS NOT NULL
+    GROUP BY COALESCE(p.cohort_year, c.year) ORDER BY year
+  `).all<{ year: number; member_count: number }>();
+  const data = rows.results.map((row) => ({ id: `cohort-${row.year}`, label: `${row.year}级`, year: row.year, sort_order: row.year - 2019, description: `${row.year}级成员。`, member_count: Number(row.member_count) }));
+  return c.json({ data, meta: { total: data.length } });
 });
 
 adminApi.post("/cohorts", async (c) => {
@@ -369,7 +370,7 @@ adminApi.post("/accounts/:id/reset-password", async (c) => {
   const credentials = await createPasswordFields(password);
   const actor = c.get("adminUser");
   await c.env.DB!.batch([
-    c.env.DB!.prepare("UPDATE users SET password_salt = ?, password_hash = ?, updated_at = datetime('now') WHERE id = ?")
+    c.env.DB!.prepare("UPDATE users SET password_salt = ?, password_hash = ?, must_change_password = 1, updated_at = datetime('now') WHERE id = ?")
       .bind(credentials.passwordSalt, credentials.passwordHash, id),
     c.env.DB!.prepare("DELETE FROM auth_sessions WHERE user_id = ?").bind(id),
     audit(c.env.DB!, actor.id, "account.password_reset", "user", id),
@@ -419,14 +420,15 @@ adminApi.post("/accounts", async (c) => {
   const body = await c.req.json().catch(() => null) as Record<string, unknown> | null;
   const personId = text(body?.personId, 160);
   const email = typeof body?.email === "string" ? normalizeEmail(body.email) : "";
+  const phone = typeof body?.phone === "string" && body.phone.trim() ? normalizePhone(body.phone) : null;
   const password = typeof body?.password === "string" ? body.password : "";
   const role = body?.role === "admin" ? "admin" : "member";
-  if (!personId || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || password.length < 8 || password.length > 100) {
-    return error(400, "VALIDATION_ERROR", "请检查人物、邮箱和密码");
+  if (!personId || ((!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) && !phone) || password.length < 8 || password.length > 100) {
+    return error(400, "VALIDATION_ERROR", "请检查人物、邮箱或手机号和密码");
   }
   const person = await c.env.DB!.prepare("SELECT id, name FROM people WHERE id = ?").bind(personId).first<{ id: string; name: string }>();
   if (!person) return error(404, "PERSON_NOT_FOUND", "人物不存在");
-  if (await c.env.DB!.prepare("SELECT id FROM users WHERE person_id = ? OR lower(email) = ?").bind(personId, email).first()) {
+  if (await c.env.DB!.prepare("SELECT id FROM users WHERE person_id = ? OR lower(email) = ? OR (? IS NOT NULL AND phone = ?)").bind(personId, email, phone, phone).first()) {
     return error(409, "ACCOUNT_EXISTS", "人物或邮箱已经绑定账号");
   }
   const id = `account-${crypto.randomUUID()}`;
@@ -434,10 +436,10 @@ adminApi.post("/accounts", async (c) => {
   const actor = c.get("adminUser");
   await c.env.DB!.batch([
     c.env.DB!.prepare(`
-      INSERT INTO users (id, person_id, role, status, email, display_name, password_salt, password_hash)
-      VALUES (?, ?, ?, 'active', ?, ?, ?, ?)
-    `).bind(id, personId, role, email, person.name, credentials.passwordSalt, credentials.passwordHash),
-    audit(c.env.DB!, actor.id, "account.create", "user", id, { personId, email, role }),
+      INSERT INTO users (id, person_id, role, status, email, phone, display_name, password_salt, password_hash, must_change_password)
+      VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, 0)
+    `).bind(id, personId, role, email, phone, person.name, credentials.passwordSalt, credentials.passwordHash),
+    audit(c.env.DB!, actor.id, "account.create", "user", id, { personId, email, phone, role }),
   ]);
   return c.json({ data: { id } }, 201);
 });

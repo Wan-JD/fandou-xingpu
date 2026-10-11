@@ -13,14 +13,29 @@ const errorResponse = (message: string, code: string, status: 400 | 401 | 403 | 
 
 accountApi.post("/session/login", async (c) => {
   const parsed = sessionLoginSchema.safeParse(await c.req.json().catch(() => null));
-  if (!parsed.success) return errorResponse("请检查邮箱和密码", "VALIDATION_ERROR", 400, parsed.error.flatten().fieldErrors as Record<string, string[]>);
+  if (!parsed.success) return errorResponse("请填写邮箱、手机号或姓名，以及密码", "VALIDATION_ERROR", 400, parsed.error.flatten().fieldErrors as Record<string, string[]>);
   if (!c.env?.DB) return errorResponse("认证数据库未配置", "DATABASE_UNAVAILABLE", 503);
-  const result = await persistence(c.env.DB).login(parsed.data.email, parsed.data.password);
+  const result = await persistence(c.env.DB).login(parsed.data.identifier ?? parsed.data.email ?? "", parsed.data.password);
   if (result.status === "rate_limited") {
     return errorResponse("尝试次数过多，请稍后再试", "LOGIN_RATE_LIMITED", 429, undefined, { "Retry-After": String(result.retryAfterSeconds) });
   }
-  if (result.status === "invalid") return errorResponse("邮箱或密码不正确", "INVALID_CREDENTIALS", 401);
+  if (result.status === "ambiguous") return errorResponse("这个姓名对应多个账号，请改用邮箱或手机号登录", "AMBIGUOUS_NAME", 409);
+  if (result.status === "invalid") return errorResponse("登录标识或密码不正确", "INVALID_CREDENTIALS", 401);
   return c.json({ data: result.session });
+});
+
+accountApi.post("/session/password", async (c) => {
+  if (!c.env?.DB) return errorResponse("认证数据库未配置", "DATABASE_UNAVAILABLE", 503);
+  const body = await c.req.json().catch(() => null) as { currentPassword?: unknown; newPassword?: unknown } | null;
+  const currentPassword = typeof body?.currentPassword === "string" ? body.currentPassword : "";
+  const newPassword = typeof body?.newPassword === "string" ? body.newPassword : "";
+  if (currentPassword.length < 6 || newPassword.length < 8 || newPassword.length > 100) {
+    return errorResponse("新密码长度需为 8 到 100 位", "VALIDATION_ERROR", 400);
+  }
+  const result = await persistence(c.env.DB).changePassword(c.req.header("Authorization"), currentPassword, newPassword);
+  if (result.state === "unauthenticated") return errorResponse("请先登录", "UNAUTHENTICATED", 401);
+  if (result.state === "invalid-current-password") return errorResponse("当前密码不正确", "INVALID_CURRENT_PASSWORD", 403);
+  return c.json({ data: { status: "updated", mustChangePassword: false } });
 });
 
 accountApi.post("/session/register", async (c) => {
@@ -72,22 +87,26 @@ accountApi.post("/me/placeholder-students", async (c) => {
   if (!session) return errorResponse("请先登录", "UNAUTHENTICATED", 401);
   const body = await c.req.json().catch(() => null) as Record<string, unknown> | null;
   const name = typeof body?.name === "string" ? body.name.trim() : "";
-  const nickname = typeof body?.nickname === "string" && body.nickname.trim() ? body.nickname.trim() : null;
-  const cohortId = typeof body?.cohortId === "string" && body.cohortId.trim() ? body.cohortId.trim() : null;
+  const loginIdentifier = typeof body?.loginIdentifier === "string" ? body.loginIdentifier.trim() : "";
+  const cohortYear = body?.cohortYear === null || body?.cohortYear === undefined || body?.cohortYear === "" ? null : Number(body.cohortYear);
   const memberType = body?.memberType === "formal" ? "formal" : body?.memberType === "probationary" || body?.memberType === undefined ? "probationary" : null;
   const joinedAt = body?.joinedAt === null || body?.joinedAt === undefined || body?.joinedAt === "" ? null : typeof body.joinedAt === "string" && /^\d{4}-\d{2}-\d{2}$/.test(body.joinedAt) ? body.joinedAt : null;
-  if (!name || name.length > 100 || (nickname?.length ?? 0) > 100 || !memberType || (body?.joinedAt && !joinedAt)) {
+  if (!name || name.length > 100 || loginIdentifier.length > 254 || !memberType || (body?.joinedAt && !joinedAt) || (cohortYear !== null && (!Number.isInteger(cohortYear) || cohortYear < 1900 || cohortYear > 2200))) {
     return errorResponse("请检查待认领节点资料", "VALIDATION_ERROR", 400);
   }
-  const result = await store.createPlaceholder(session.user.personId, session.user.id, { name, nickname, cohortId, memberType, joinedAt });
+  const result = await store.createPlaceholder(session.user.personId, session.user.id, { name, loginIdentifier: loginIdentifier || null, cohortYear, memberType, joinedAt });
   if (result.state === "mentor-not-found") return errorResponse("师傅档案不存在", "MENTOR_NOT_FOUND", 404);
   if (result.state === "mentor-not-lineage") return errorResponse("只有谱系成员可以代建徒弟节点", "MENTOR_NOT_LINEAGE", 409);
-  if (result.state === "cohort-not-found") return errorResponse("级别不存在", "COHORT_NOT_FOUND", 404);
+  if (result.state === "invalid-identifier") return errorResponse("登录标识请填写有效邮箱或手机号", "INVALID_IDENTIFIER", 400);
+  if (result.state === "identifier-conflict") return errorResponse("这个邮箱或手机号已经被使用", "IDENTIFIER_ALREADY_REGISTERED", 409);
   return c.json({ data: {
     person: result.person,
+    account: result.account,
     claimToken: result.token,
     claimPath: `/claim?token=${encodeURIComponent(result.token)}`,
     expiresAt: result.expiresAt,
+    loginIdentifier: result.account.identifier,
+    temporaryPassword: result.account.temporaryPassword,
   } }, 201);
 });
 

@@ -67,7 +67,6 @@ const publicPersistentInvite = (record: PersistentInvite, mentor: Record<string,
   mentor: mentor ? {
     id: mentor.id,
     name: mentor.name,
-    nickname: mentor.nickname ?? null,
     avatarUrl: mentor.avatarUrl ?? null,
     cohort: mentor.cohort ?? null,
     relationScope: mentor.relationScope,
@@ -103,21 +102,22 @@ inviteApi.get("/:token", async (c) => {
 });
 
 inviteApi.post("/:token/accept", async (c) => {
-  const body = await c.req.json().catch(() => null) as { name?: unknown; nickname?: unknown; email?: unknown; password?: unknown } | null;
+  const body = await c.req.json().catch(() => null) as { name?: unknown; nickname?: unknown; email?: unknown; phone?: unknown; password?: unknown } | null;
   const name = typeof body?.name === "string" ? body.name.trim() : "";
   const nickname = typeof body?.nickname === "string" && body.nickname.trim() ? body.nickname.trim() : null;
   const email = typeof body?.email === "string" ? body.email.trim().toLocaleLowerCase() : "";
+  const phone = typeof body?.phone === "string" && body.phone.trim() ? body.phone.trim() : null;
   const password = typeof body?.password === "string" ? body.password : "";
-  if (!name || name.length > 100 || (nickname?.length ?? 0) > 100 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || password.length < 6 || password.length > 100) {
-    return apiError(400, "INVALID_REGISTRATION", "A valid name is required");
+  if (!name || name.length > 100 || (nickname?.length ?? 0) > 100 || (!email && !phone) || (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) || (phone && phone.length > 30) || password.length < 6 || password.length > 100) {
+    return apiError(400, "INVALID_REGISTRATION", "请检查姓名、邮箱、手机号和密码");
   }
   if (!c.env?.DB) return apiError(503, "DATABASE_UNAVAILABLE", "Authentication database is not configured");
   const store = persistence(c.env.DB);
-  const result = await store.acceptInvite(c.req.param("token"), { name, nickname, email, password });
+  const result = await store.acceptInvite(c.req.param("token"), { name, nickname, email: email || null, phone, password });
   if (result.state === "missing") return apiError(404, "INVITE_NOT_FOUND", "Invitation not found");
   if (result.state === "expired") return apiError(410, "INVITE_EXPIRED", "Invitation has expired");
   if (result.state === "accepted") return apiError(409, "INVITE_ALREADY_ACCEPTED", "Invitation has already been accepted");
-  if (result.state === "email-conflict") return apiError(409, "EMAIL_ALREADY_REGISTERED", "Email is already registered");
+  if (result.state === "email-conflict") return apiError(409, "IDENTIFIER_ALREADY_REGISTERED", "邮箱或手机号已经注册");
   if (result.state !== "accepted-now" || !result.record || !result.session) return apiError(409, "INVITE_ALREADY_ACCEPTED", "Invitation has already been accepted");
   const mentor = await store.personDetail(result.record.mentorId);
   return c.json({ data: {

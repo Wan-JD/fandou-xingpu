@@ -10,6 +10,7 @@ export interface Person {
   name: string;
   nickname: string | null;
   avatarUrl: string | null;
+  cohortYear: number | null;
   role: string;
   generation: string;
   joinedAt: string;

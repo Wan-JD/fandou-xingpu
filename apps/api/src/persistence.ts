@@ -7,6 +7,7 @@ import {
   createPasswordFields,
   hashToken,
   normalizeEmail,
+  normalizePhone,
   verifyPassword,
   type LoginResult,
   type Session,
@@ -33,6 +34,7 @@ type PersonRow = {
   created_at: string;
   updated_at: string;
   cohort_id: string | null;
+  cohort_year_direct: number | null;
   cohort_label: string | null;
   cohort_year: number | null;
   cohort_sort_order: number | null;
@@ -56,12 +58,14 @@ type StoredPerson = {
 
 type AccountRow = {
   id: string;
-  email: string;
+  email: string | null;
+  phone: string | null;
   display_name: string;
   person_id: string;
   role: "member" | "admin";
   password_salt: string;
   password_hash: string;
+  must_change_password: number;
 };
 
 type SessionRow = AccountRow & { expires_at: string };
@@ -118,6 +122,7 @@ const PERSON_SELECT = `
     p.is_featured, p.status, p.member_type, p.destination, p.version, p.role, p.joined_at,
     p.tags_json, p.created_at, p.updated_at,
     p.contact_email, p.education, p.experience, p.skills_json, p.links_json,
+    p.cohort_year AS cohort_year_direct,
     c.id AS cohort_id, c.label AS cohort_label, c.year AS cohort_year,
     c.sort_order AS cohort_sort_order, c.description AS cohort_description,
     (SELECT a.id FROM attachments a WHERE a.person_id = p.id AND a.category = 'avatar' AND a.status = 'ready' ORDER BY a.created_at DESC LIMIT 1) AS avatar_attachment_id
@@ -192,10 +197,11 @@ function normalizedAttachmentName(personName: string | null | undefined, categor
 }
 
 function mapPerson(row: PersonRow): StoredPerson {
-  const cohort = row.cohort_id ? {
-    id: row.cohort_id,
-    name: row.cohort_label ?? "未分级",
-    year: row.cohort_year ?? 0,
+  const cohortYear = row.cohort_year_direct ?? row.cohort_year;
+  const cohort = cohortYear ? {
+    id: `cohort-${cohortYear}`,
+    name: `${cohortYear}级`,
+    year: cohortYear,
     memberCount: 0,
     description: row.cohort_description ?? "",
   } satisfies Cohort : null;
@@ -205,6 +211,7 @@ function mapPerson(row: PersonRow): StoredPerson {
       name: row.name,
       nickname: row.nickname,
       avatarUrl: row.avatar_attachment_id ? `/api/attachments/${row.avatar_attachment_id}` : null,
+      cohortYear,
       role: row.role,
       generation: cohort?.name ?? "未分级",
       joinedAt: row.joined_at ?? row.created_at.slice(0, 10),
@@ -235,8 +242,10 @@ function toSummary(record: StoredPerson) {
   return {
     id: person.id,
     name: person.name,
-    nickname: person.nickname,
+    // Keep a null compatibility slot for older clients; nicknames are no longer populated or editable.
+    nickname: null,
     avatarUrl: person.avatarUrl,
+    cohortYear: person.cohortYear,
     cohort: cohort ? { id: cohort.id, label: cohort.name, year: cohort.year || null, sortOrder: record.cohortSortOrder ?? (cohort.year ? cohort.year - 2019 : 99) } : null,
     relationScope: person.relationScope,
     isFeatured: person.isFeatured,
@@ -250,9 +259,11 @@ function publicUser(row: AccountRow): SessionUser {
   return {
     id: row.id,
     email: row.email,
+    phone: row.phone,
     displayName: row.display_name,
     personId: row.person_id,
     role: row.role,
+    mustChangePassword: Boolean(row.must_change_password),
   };
 }
 
@@ -443,17 +454,19 @@ export class D1Persistence {
 
   async cohorts() {
     const rows = await this.db.prepare(`
-      SELECT c.id, c.label AS name, c.year, c.sort_order, c.description, COUNT(p.id) AS member_count
-      FROM cohorts c LEFT JOIN people p ON p.cohort_id = c.id
-      GROUP BY c.id ORDER BY COALESCE(c.year, 9999), c.sort_order, c.id
-    `).all<{ id: string; name: string; year: number | null; sort_order: number; description: string | null; member_count: number }>();
+      SELECT COALESCE(p.cohort_year, c.year) AS year, COUNT(p.id) AS member_count
+      FROM people p LEFT JOIN cohorts c ON c.id = p.cohort_id
+      WHERE COALESCE(p.cohort_year, c.year) IS NOT NULL
+      GROUP BY COALESCE(p.cohort_year, c.year)
+      ORDER BY year
+    `).all<{ year: number; member_count: number }>();
     return rows.results.map((row) => ({
-      id: row.id,
-      name: row.name,
-      year: row.year ?? 0,
-      sortOrder: row.sort_order,
+      id: `cohort-${row.year}`,
+      name: `${row.year}级`,
+      year: row.year,
+      sortOrder: row.year - 2019,
       memberCount: Number(row.member_count),
-      description: row.description ?? "",
+      description: `${row.year}级成员。`,
     } satisfies Cohort));
   }
 
@@ -484,36 +497,60 @@ export class D1Persistence {
     return { token, expiresAt, user: publicUser(account) } satisfies Session;
   }
 
-  async login(email: string, password: string, now = Date.now()): Promise<LoginResult> {
-    const normalizedEmail = normalizeEmail(email);
+  async login(identifier: string, password: string, now = Date.now()): Promise<LoginResult> {
+    const trimmedIdentifier = identifier.trim();
+    const phoneCandidate = normalizePhone(trimmedIdentifier);
+    const kind = trimmedIdentifier.includes("@")
+      ? "email"
+      : /^[+\d\s()-]+$/.test(trimmedIdentifier) && /^\+?\d{6,20}$/.test(phoneCandidate)
+        ? "phone"
+        : "name";
+    const normalizedIdentifier = kind === "email"
+      ? normalizeEmail(trimmedIdentifier)
+      : kind === "phone"
+        ? phoneCandidate
+        : trimmedIdentifier.toLocaleLowerCase();
+    const attemptKey = `${kind}:${normalizedIdentifier}`;
     const attempt = await this.db.prepare("SELECT failures, window_started_at AS windowStartedAt, blocked_until AS blockedUntil FROM login_attempts WHERE email = ?")
-      .bind(normalizedEmail).first<{ failures: number; windowStartedAt: string; blockedUntil: string | null }>();
+      .bind(attemptKey).first<{ failures: number; windowStartedAt: string; blockedUntil: string | null }>();
     const windowMs = 15 * 60 * 1000;
     const blockMs = 15 * 60 * 1000;
     let failures = attempt && now - Date.parse(attempt.windowStartedAt) < windowMs ? attempt.failures : 0;
     if (attempt?.blockedUntil && Date.parse(attempt.blockedUntil) > now) {
       return { status: "rate_limited", retryAfterSeconds: Math.ceil((Date.parse(attempt.blockedUntil) - now) / 1000) };
     }
-    const account = await this.db.prepare(`
-      SELECT id, email, display_name, person_id, role, password_salt, password_hash
-      FROM users WHERE lower(email) = ? AND status = 'active'
-    `).bind(normalizedEmail).first<AccountRow>();
+    const lookup = kind === "email"
+      ? "lower(u.email) = ?"
+      : kind === "phone"
+        ? "u.phone = ?"
+        : "lower(p.name) = ?";
+    const matches = await this.db.prepare(`
+      SELECT u.id, u.email, u.phone, u.display_name, u.person_id, u.role,
+        u.password_salt, u.password_hash, u.must_change_password
+      FROM users u JOIN people p ON p.id = u.person_id
+      WHERE ${lookup} AND u.status = 'active'
+      ORDER BY u.created_at, u.id
+      LIMIT 2
+    `).bind(normalizedIdentifier).all<AccountRow>();
+    if (matches.results.length > 1) return { status: "ambiguous" };
+    const account = matches.results[0] ?? null;
     if (!account || !await verifyPassword(password, account.password_salt, account.password_hash)) {
       failures += 1;
       const blockedUntil = failures >= 5 ? new Date(now + blockMs).toISOString() : null;
       await this.db.prepare(`INSERT INTO login_attempts (email, failures, window_started_at, blocked_until) VALUES (?, ?, ?, ?)
         ON CONFLICT(email) DO UPDATE SET failures = excluded.failures, window_started_at = excluded.window_started_at, blocked_until = excluded.blocked_until`)
-        .bind(normalizedEmail, failures, new Date(now).toISOString(), blockedUntil).run();
+        .bind(attemptKey, failures, new Date(now).toISOString(), blockedUntil).run();
       if (blockedUntil) return { status: "rate_limited", retryAfterSeconds: Math.ceil(blockMs / 1000) };
       return { status: "invalid" };
     }
-    await this.db.prepare("DELETE FROM login_attempts WHERE email = ?").bind(normalizedEmail).run();
+    await this.db.prepare("DELETE FROM login_attempts WHERE email = ?").bind(attemptKey).run();
     return { status: "success", session: await this.issueSession(account, now) };
   }
 
   private async register(input: {
     displayName: string;
-    email: string;
+    email: string | null;
+    phone?: string | null;
     password: string;
     personId: string;
     nickname: string | null;
@@ -522,14 +559,15 @@ export class D1Persistence {
     now?: number;
   }) {
     const now = input.now ?? Date.now();
-    const email = normalizeEmail(input.email);
-    const existing = await this.db.prepare("SELECT id FROM users WHERE lower(email) = ?").bind(email).first<{ id: string }>();
+    const email = input.email ? normalizeEmail(input.email) : null;
+    const phone = input.phone ? normalizePhone(input.phone) : null;
+    const existing = await this.db.prepare("SELECT id FROM users WHERE lower(email) = ? OR (? IS NOT NULL AND phone = ?)")
+      .bind(email, phone, phone).first<{ id: string }>();
     if (existing) return null;
 
     const credentials = await createPasswordFields(input.password);
     const accountId = `account-${crypto.randomUUID()}`;
     const year = new Date(now).getUTCFullYear();
-    const cohortId = `cohort-${year}`;
     const joinedAt = new Date(now).toISOString().slice(0, 10);
     const sessionToken = createOpaqueToken("session");
     const sessionTokenHash = await hashToken(sessionToken);
@@ -537,30 +575,25 @@ export class D1Persistence {
 
     const statements = [
       this.db.prepare(`
-        INSERT INTO cohorts (id, label, year, sort_order, description)
-        VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING
-      `).bind(cohortId, `${year}级`, year, year - 2019, `${year} 级成员。`),
-      this.db.prepare(`
         INSERT INTO people (
-          id, name, nickname, mentor_id, cohort_id, relation_scope, bio,
+          id, name, nickname, mentor_id, cohort_id, cohort_year, relation_scope, bio,
           is_featured, status, destination, role, joined_at, tags_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'active', NULL, '星谱成员', ?, '[]')
+        ) VALUES (?, ?, NULL, ?, NULL, ?, ?, ?, 0, 'active', NULL, '星谱成员', ?, '[]')
       `).bind(
         input.personId,
         input.displayName.trim(),
-        input.nickname,
         input.mentorId,
-        cohortId,
+        year,
         input.mentorId ? "lineage" : "cohort_guest",
         "刚刚加入星谱，个人简介等待补充。",
         joinedAt,
       ),
       this.db.prepare(`
         INSERT INTO users (
-          id, person_id, role, status, email, display_name,
+          id, person_id, role, status, email, phone, display_name,
           password_salt, password_hash, invite_token_hash
-        ) VALUES (?, ?, 'member', 'active', ?, ?, ?, ?, ?)
-      `).bind(accountId, input.personId, email, input.displayName.trim(), credentials.passwordSalt, credentials.passwordHash, input.inviteTokenHash ?? null),
+        ) VALUES (?, ?, 'member', 'active', ?, ?, ?, ?, ?, ?)
+      `).bind(accountId, input.personId, email, phone, input.displayName.trim(), credentials.passwordSalt, credentials.passwordHash, input.inviteTokenHash ?? null),
       this.db.prepare("INSERT INTO auth_sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)")
         .bind(sessionTokenHash, accountId, expiresAt),
     ];
@@ -581,11 +614,13 @@ export class D1Persistence {
     const account: AccountRow = {
       id: accountId,
       email,
+      phone,
       display_name: input.displayName.trim(),
       person_id: input.personId,
       role: "member",
       password_salt: credentials.passwordSalt,
       password_hash: credentials.passwordHash,
+      must_change_password: 0,
     };
     return { token: sessionToken, expiresAt, user: publicUser(account) } satisfies Session;
   }
@@ -599,8 +634,8 @@ export class D1Persistence {
     if (!token) return null;
     const tokenHash = await hashToken(token);
     const row = await this.db.prepare(`
-      SELECT u.id, u.email, u.display_name, u.person_id, u.role,
-        u.password_salt, u.password_hash, s.expires_at
+      SELECT u.id, u.email, u.phone, u.display_name, u.person_id, u.role,
+        u.password_salt, u.password_hash, u.must_change_password, s.expires_at
       FROM auth_sessions s JOIN users u ON u.id = s.user_id
       WHERE s.token_hash = ? AND u.status = 'active'
     `).bind(tokenHash).first<SessionRow>();
@@ -619,10 +654,31 @@ export class D1Persistence {
     return (result.meta.changes ?? 0) > 0;
   }
 
-  async updateProfile(personId: string, input: { version: number; nickname?: string | null; bio?: string; destination?: Person["destination"]; memberType?: Person["memberType"] | null; contactEmail?: string | null; education?: string | null; experience?: string | null; skills?: string[]; links?: { label: string; url: string }[] }) {
+  async changePassword(authorization: string | undefined, currentPassword: string, newPassword: string) {
+    const token = bearerToken(authorization);
+    if (!token) return { state: "unauthenticated" } as const;
+    const tokenHash = await hashToken(token);
+    const account = await this.db.prepare(`
+      SELECT u.id, u.password_salt, u.password_hash
+      FROM auth_sessions s JOIN users u ON u.id = s.user_id
+      WHERE s.token_hash = ? AND s.expires_at > ? AND u.status = 'active'
+    `).bind(tokenHash, new Date().toISOString()).first<{ id: string; password_salt: string; password_hash: string }>();
+    if (!account) return { state: "unauthenticated" } as const;
+    if (!await verifyPassword(currentPassword, account.password_salt, account.password_hash)) {
+      return { state: "invalid-current-password" } as const;
+    }
+    const credentials = await createPasswordFields(newPassword);
+    await this.db.batch([
+      this.db.prepare(`UPDATE users SET password_salt = ?, password_hash = ?, must_change_password = 0, updated_at = datetime('now') WHERE id = ?`)
+        .bind(credentials.passwordSalt, credentials.passwordHash, account.id),
+      this.db.prepare("DELETE FROM auth_sessions WHERE user_id = ? AND token_hash <> ?").bind(account.id, tokenHash),
+    ]);
+    return { state: "updated" } as const;
+  }
+
+  async updateProfile(personId: string, input: { version: number; bio?: string; destination?: Person["destination"]; memberType?: Person["memberType"] | null; contactEmail?: string | null; education?: string | null; experience?: string | null; skills?: string[]; links?: { label: string; url: string }[] }) {
     const assignments: string[] = [];
     const values: unknown[] = [];
-    if ("nickname" in input) { assignments.push("nickname = ?"); values.push(input.nickname ?? null); }
     if (input.bio !== undefined) { assignments.push("bio = ?"); values.push(input.bio); }
     if ("destination" in input) { assignments.push("destination = ?"); values.push(input.destination ?? null); }
     if ("memberType" in input) { assignments.push("member_type = ?"); values.push(input.memberType ?? "formal"); }
@@ -652,63 +708,74 @@ export class D1Persistence {
 
   async createPlaceholder(mentorId: string, createdByUserId: string, input: {
     name: string;
-    nickname: string | null;
-    cohortId: string | null;
+    loginIdentifier: string | null;
+    cohortYear: number | null;
     memberType: "formal" | "probationary";
     joinedAt: string | null;
-  }, now = Date.now(), ttlMs = 30 * 24 * 60 * 60 * 1000) {
+  }, now = Date.now()) {
     const mentor = await this.db.prepare("SELECT id, relation_scope FROM people WHERE id = ?")
       .bind(mentorId).first<{ id: string; relation_scope: string }>();
     if (!mentor) return { state: "mentor-not-found" } as const;
     if (mentor.relation_scope !== "lineage") return { state: "mentor-not-lineage" } as const;
-    if (input.cohortId) {
-      const cohort = await this.db.prepare("SELECT id FROM cohorts WHERE id = ?").bind(input.cohortId).first();
-      if (!cohort) return { state: "cohort-not-found" } as const;
-    }
     const personId = `placeholder-${crypto.randomUUID().replace(/-/g, "").slice(0, 20)}`;
-    const token = createOpaqueToken("claim");
-    const tokenHash = await hashToken(token);
-    const createdAt = new Date(now).toISOString();
-    const expiresAt = new Date(now + ttlMs).toISOString();
+    const supplied = input.loginIdentifier?.trim() ?? "";
+    const isEmail = supplied.includes("@");
+    const normalizedPhone = normalizePhone(supplied);
+    const isPhone = !isEmail && /^\+?\d{6,20}$/.test(normalizedPhone);
+    if (supplied && !isEmail && !isPhone) return { state: "invalid-identifier" } as const;
+    const email = isEmail ? normalizeEmail(supplied) : null;
+    const phone = isPhone ? normalizedPhone : null;
+    const duplicate = await this.db.prepare("SELECT id FROM users WHERE (email IS NOT NULL AND lower(email) = ?) OR (phone IS NOT NULL AND phone = ?)")
+      .bind(email, phone).first<{ id: string }>();
+    if (duplicate) return { state: "identifier-conflict" } as const;
+    const accountId = `account-${crypto.randomUUID()}`;
+    const temporaryPassword = `X${crypto.randomUUID().replace(/-/g, "").slice(0, 11)}!`;
+    const credentials = await createPasswordFields(temporaryPassword);
+    const identifier = email ?? phone ?? input.name.trim();
+    const claimToken = createOpaqueToken("claim");
+    const claimTokenHash = await hashToken(claimToken);
+    const claimCreatedAt = new Date(now).toISOString();
+    const claimExpiresAt = new Date(now + 30 * 24 * 60 * 60 * 1000).toISOString();
     await this.db.batch([
       this.db.prepare(`
         INSERT INTO people (
-          id, name, nickname, mentor_id, cohort_id, relation_scope, bio,
+          id, name, nickname, mentor_id, cohort_id, cohort_year, relation_scope, bio,
           is_featured, status, member_type, role, joined_at, tags_json
-        ) VALUES (?, ?, ?, ?, ?, 'lineage', ?, 0, 'active', ?, '待认领成员', ?, '[]')
-      `).bind(personId, input.name, input.nickname, mentorId, input.cohortId,
-        "这个节点由师傅代为保留，等待本人认领。", input.memberType, input.joinedAt),
-      this.db.prepare(`
-        INSERT INTO person_claims (token_hash, person_id, created_by_user_id, expires_at, created_at)
-        VALUES (?, ?, ?, ?, ?)
-      `).bind(tokenHash, personId, createdByUserId, expiresAt, createdAt),
+        ) VALUES (?, ?, NULL, ?, NULL, ?, 'lineage', ?, 0, 'active', ?, '待认领成员', ?, '[]')
+      `).bind(personId, input.name, mentorId, input.cohortYear,
+        "这个节点由师傅代为保留，等待本人接手账号。", input.memberType, input.joinedAt),
+      this.db.prepare(`INSERT INTO users (id, person_id, role, status, email, phone, display_name, password_salt, password_hash, must_change_password)
+        VALUES (?, ?, 'member', 'active', ?, ?, ?, ?, ?, 1)`)
+        .bind(accountId, personId, email, phone, input.name.trim(), credentials.passwordSalt, credentials.passwordHash),
+      this.db.prepare(`INSERT INTO person_claims (token_hash, person_id, created_by_user_id, expires_at, created_at)
+        VALUES (?, ?, ?, ?, ?)`)
+        .bind(claimTokenHash, personId, createdByUserId, claimExpiresAt, claimCreatedAt),
     ]);
     const person = await this.personDetail(personId);
-    return { state: "created", token, personId, createdAt, expiresAt, person } as const;
+    return { state: "created", personId, person, token: claimToken, expiresAt: claimExpiresAt, account: { identifier, temporaryPassword, mustChangePassword: true } } as const;
   }
 
   async listPlaceholders(mentorId: string) {
     const rows = await this.db.prepare(`
-      SELECT c.token_hash, c.person_id, c.created_at, c.expires_at, c.claimed_at,
-        p.name, p.nickname, p.member_type, p.status, p.cohort_id,
-        co.label AS cohort_label, co.year AS cohort_year
-      FROM person_claims c
-      JOIN people p ON p.id = c.person_id
-      LEFT JOIN cohorts co ON co.id = p.cohort_id
+      SELECT p.id AS person_id, p.name, p.member_type, p.status, p.cohort_year,
+        p.created_at, c.expires_at, c.claimed_at, u.email, u.phone
+      FROM people p
+      LEFT JOIN person_claims c ON c.person_id = p.id
+      LEFT JOIN users u ON u.person_id = p.id
       WHERE p.mentor_id = ?
-      ORDER BY c.created_at DESC
-    `).bind(mentorId).all<ClaimRow & { name: string; nickname: string | null; member_type: string; status: string; cohort_id: string | null; cohort_label: string | null; cohort_year: number | null }>();
+      ORDER BY p.created_at DESC
+    `).bind(mentorId).all<ClaimRow & { name: string; member_type: string; status: string; cohort_year: number | null; email: string | null; phone: string | null }>();
     return rows.results.map((row) => ({
       personId: row.person_id,
       name: row.name,
-      nickname: row.nickname,
       memberType: row.member_type,
       status: row.status,
-      cohort: row.cohort_id ? { id: row.cohort_id, label: row.cohort_label ?? "未分级", year: row.cohort_year } : null,
+      cohort: row.cohort_year ? { id: `cohort-${row.cohort_year}`, label: `${row.cohort_year}级`, year: row.cohort_year } : null,
       createdAt: row.created_at,
-      expiresAt: row.expires_at,
+      expiresAt: row.expires_at ?? "",
       claimedAt: row.claimed_at,
-      state: row.claimed_at ? "claimed" : Date.parse(row.expires_at) <= Date.now() ? "expired" : "pending",
+      account: { identifier: row.email ?? row.phone ?? row.name },
+      state: row.email || row.phone ? "account-created" : row.claimed_at ? "claimed" : row.expires_at && Date.parse(row.expires_at) <= Date.now() ? "expired" : "pending",
     }));
   }
 
@@ -743,21 +810,21 @@ export class D1Persistence {
     return { state: "pending", claim: record, person };
   }
 
-  async claimPlaceholder(token: string, input: { name?: string; nickname?: string | null; email: string; password: string }, now = Date.now()) {
+  async claimPlaceholder(token: string, input: { name?: string; nickname?: string | null; email: string | null; phone?: string | null; password: string }, now = Date.now()) {
     const inspected = await this.inspectClaim(token, now);
     if (inspected.state !== "pending") return { state: inspected.state, claim: inspected.claim, person: inspected.person, session: null } as const;
-    const email = normalizeEmail(input.email);
-    const existing = await this.db.prepare("SELECT id FROM users WHERE lower(email) = ? OR person_id = ?")
-      .bind(email, inspected.claim.personId).first<{ id: string }>();
-    if (existing) return { state: "email-conflict", claim: inspected.claim, person: inspected.person, session: null } as const;
-    const accountId = `account-${crypto.randomUUID()}`;
+    const email = input.email ? normalizeEmail(input.email) : null;
+    const phone = input.phone ? normalizePhone(input.phone) : null;
+    const existing = await this.db.prepare("SELECT id, person_id FROM users WHERE lower(email) = ? OR (? IS NOT NULL AND phone = ?) OR person_id = ?")
+      .bind(email, phone, phone, inspected.claim.personId).first<{ id: string; person_id: string }>();
+    if (existing && existing.person_id !== inspected.claim.personId) return { state: "email-conflict", claim: inspected.claim, person: inspected.person, session: null } as const;
+    const accountId = existing?.id ?? `account-${crypto.randomUUID()}`;
     const credentials = await createPasswordFields(input.password);
     const sessionToken = createOpaqueToken("session");
     const sessionTokenHash = await hashToken(sessionToken);
     const claimTokenHash = await hashToken(token);
     const expiresAt = new Date(now + SESSION_TTL_MS).toISOString();
     const displayName = input.name?.trim() || inspected.person.name;
-    const nickname = input.nickname === undefined ? inspected.person.nickname : input.nickname;
     const claimedAt = new Date(now).toISOString();
     const claimResult = await this.db.prepare(`UPDATE person_claims SET claimed_at = ?, claimed_by_user_id = ?
       WHERE token_hash = ? AND claimed_at IS NULL AND expires_at > ?`)
@@ -767,11 +834,14 @@ export class D1Persistence {
     }
     try {
       await this.db.batch([
-        this.db.prepare(`UPDATE people SET name = ?, nickname = ?, role = '星谱成员', version = version + 1, updated_at = datetime('now') WHERE id = ?`)
-          .bind(displayName, nickname, inspected.claim.personId),
-        this.db.prepare(`INSERT INTO users (id, person_id, role, status, email, display_name, password_salt, password_hash)
-          VALUES (?, ?, 'member', 'active', ?, ?, ?, ?)`)
-          .bind(accountId, inspected.claim.personId, email, displayName, credentials.passwordSalt, credentials.passwordHash),
+        this.db.prepare(`UPDATE people SET name = ?, role = '星谱成员', version = version + 1, updated_at = datetime('now') WHERE id = ?`)
+          .bind(displayName, inspected.claim.personId),
+        existing
+          ? this.db.prepare(`UPDATE users SET email = ?, phone = ?, display_name = ?, password_salt = ?, password_hash = ?, must_change_password = 0, updated_at = datetime('now') WHERE id = ?`)
+            .bind(email, phone, displayName, credentials.passwordSalt, credentials.passwordHash, accountId)
+          : this.db.prepare(`INSERT INTO users (id, person_id, role, status, email, phone, display_name, password_salt, password_hash)
+            VALUES (?, ?, 'member', 'active', ?, ?, ?, ?, ?)`)
+            .bind(accountId, inspected.claim.personId, email, phone, displayName, credentials.passwordSalt, credentials.passwordHash),
         this.db.prepare("INSERT INTO auth_sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)")
           .bind(sessionTokenHash, accountId, expiresAt),
       ]);
@@ -782,8 +852,8 @@ export class D1Persistence {
       throw error;
     }
     const account: AccountRow = {
-      id: accountId, email, display_name: displayName, person_id: inspected.claim.personId,
-      role: "member", password_salt: credentials.passwordSalt, password_hash: credentials.passwordHash,
+      id: accountId, email, phone, display_name: displayName, person_id: inspected.claim.personId,
+      role: "member", password_salt: credentials.passwordSalt, password_hash: credentials.passwordHash, must_change_password: 0,
     };
     const profile = await this.personDetail(inspected.claim.personId);
     return { state: "claimed-now", claim: { ...inspected.claim, claimedAt }, person: profile, session: { token: sessionToken, expiresAt, user: publicUser(account) } satisfies Session } as const;
@@ -812,7 +882,7 @@ export class D1Persistence {
     return { state: "pending", record };
   }
 
-  async acceptInvite(token: string, input: { name: string; nickname: string | null; email: string; password: string }, now = Date.now()) {
+  async acceptInvite(token: string, input: { name: string; nickname: string | null; email: string | null; phone?: string | null; password: string }, now = Date.now()) {
     const inspected = await this.inspectInvite(token, now);
     if (inspected.state !== "pending") return { state: inspected.state, record: inspected.record, session: null } as const;
     const tokenHash = await hashToken(token);
@@ -820,6 +890,7 @@ export class D1Persistence {
     const session = await this.register({
       displayName: input.name,
       email: input.email,
+      phone: input.phone,
       password: input.password,
       personId,
       nickname: input.nickname,

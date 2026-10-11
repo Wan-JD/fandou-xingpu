@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 
-type PersonPreview = { id: string; name: string; nickname: string | null; cohort: { label: string } | null; memberType: "formal" | "probationary"; mentor: { name: string } | null };
+type PersonPreview = { id: string; name: string; cohort: { label: string } | null; memberType: "formal" | "probationary"; mentor: { name: string } | null };
 const props = defineProps<{ token: string }>();
 const activeToken = ref(props.token);
 const manualToken = ref(props.token);
@@ -10,8 +10,8 @@ const submitting = ref(false);
 const error = ref("");
 const person = ref<PersonPreview | null>(null);
 const name = ref("");
-const nickname = ref("");
 const email = ref("");
+const phone = ref("");
 const password = ref("");
 const claimed = ref(false);
 
@@ -20,6 +20,7 @@ const errorText = (code?: string) => ({
   CLAIM_NOT_FOUND: "没有找到这条认领链接，请检查链接是否完整。",
   CLAIM_ALREADY_USED: "这条认领链接已经被使用。",
   EMAIL_ALREADY_REGISTERED: "这个邮箱已经注册，请更换邮箱或直接登录。",
+  IDENTIFIER_ALREADY_REGISTERED: "这个邮箱或手机号已经注册，请更换后重试。",
 }[code ?? ""] ?? "认领链接暂时无法读取，请稍后重试。");
 
 async function loadClaim() {
@@ -36,13 +37,13 @@ async function loadClaim() {
 }
 
 async function acceptClaim() {
-  if (!email.value || password.value.length < 6) return;
+  if ((!email.value && !phone.value) || password.value.length < 6) return;
   submitting.value = true;
   error.value = "";
   try {
     const response = await fetch(`/api/claims/${encodeURIComponent(activeToken.value)}/accept`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: name.value || undefined, nickname: nickname.value || undefined, email: email.value, password: password.value }),
+      body: JSON.stringify({ name: name.value || undefined, email: email.value, phone: phone.value || undefined, password: password.value }),
     });
     const payload = await response.json() as { data?: { session: { token: string } }; error?: { code?: string; message?: string } };
     if (!response.ok || !payload.data) throw new Error(errorText(payload.error?.code) || payload.error?.message);
@@ -82,10 +83,10 @@ onMounted(loadClaim);
       <h1>认领 {{ person.name }} 这颗星</h1>
       <p>{{ person.mentor?.name ?? "师傅" }} 为你留下了一个节点 · {{ person.cohort?.label ?? "未分级" }}</p>
       <label>姓名（可修改）<input v-model.trim="name" :placeholder="person.name" maxlength="100" /></label>
-      <label>昵称（选填）<input v-model.trim="nickname" maxlength="100" /></label>
-      <label>邮箱<input v-model.trim="email" required maxlength="254" type="email" autocomplete="email" /></label>
+      <label>邮箱（邮箱或手机号至少填写一项）<input v-model.trim="email" maxlength="254" type="email" autocomplete="email" /></label>
+      <label>手机号（可选）<input v-model.trim="phone" maxlength="30" type="tel" autocomplete="tel" /></label>
       <label>密码<input v-model="password" required minlength="6" maxlength="100" type="password" autocomplete="new-password" /></label>
-      <button class="register-action" type="submit" :disabled="submitting || !email || password.length < 6">{{ submitting ? "正在认领" : "建立账号并认领" }}</button>
+      <button class="register-action" type="submit" :disabled="submitting || (!email && !phone) || password.length < 6">{{ submitting ? "正在认领" : "建立账号并认领" }}</button>
     </form>
   </section>
 </template>

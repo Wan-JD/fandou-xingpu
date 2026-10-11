@@ -2,17 +2,17 @@
 import { computed, onMounted, ref } from "vue";
 
 type Member = {
-  id: string; name: string; cohort_id: string | null; cohort_label: string | null;
+  id: string; name: string; cohort_id: string | null; cohort_label: string | null; cohort_year: number | null;
   status: "active" | "archived"; destination: string | null; mentor_id: string | null;
   mentor_name: string | null; relation_scope: "lineage" | "cohort_guest"; version: number;
-  nickname: string | null; bio: string; role: string; member_type: "formal" | "probationary"; is_featured: number; featured_note: string | null; tags_json: string;
+  bio: string; role: string; member_type: "formal" | "probationary"; is_featured: number; featured_note: string | null; tags_json: string;
   account_id: string | null; email: string | null; account_role: "member" | "admin" | null;
   account_status: "active" | "disabled" | null;
 };
 type Cohort = { id: string; label: string; year: number | null; sort_order: number; description: string; member_count: number };
 type Invite = { id: string; mentor_id: string; mentor_name: string; created_at: string; expires_at: string; accepted_at: string | null; accepted_person_id: string | null; revoked_at: string | null };
 type AuditLog = { id: string; actor_name: string; action: string; target_type: string; target_id: string; details_json: string; created_at: string };
-type Tab = "members" | "cohorts" | "invites" | "audit";
+type Tab = "members" | "invites" | "audit";
 
 const props = defineProps<{ sessionToken: string }>();
 const emit = defineEmits<{ changed: [] }>();
@@ -22,19 +22,16 @@ const saving = ref("");
 const notice = ref("");
 const failure = ref("");
 const members = ref<Member[]>([]);
-const cohorts = ref<Cohort[]>([]);
 const invites = ref<Invite[]>([]);
 const logs = ref<AuditLog[]>([]);
 const editingId = ref("");
-const editForm = ref({ name: "", nickname: "", bio: "", role: "", memberType: "formal" as "formal" | "probationary", isFeatured: false, featuredNote: "", tags: "", cohortId: "", status: "active", destination: "", mentorId: "", relationScope: "lineage" });
-const memberForm = ref({ name: "", cohortId: "", status: "active", memberType: "formal" as "formal" | "probationary", destination: "", mentorId: "", relationScope: "lineage" });
-const cohortForm = ref({ label: "", year: new Date().getFullYear(), sortOrder: new Date().getFullYear(), description: "" });
-const accountForm = ref({ personId: "", email: "", password: "", role: "member" });
+const editForm = ref({ name: "", bio: "", role: "", memberType: "formal" as "formal" | "probationary", isFeatured: false, featuredNote: "", tags: "", cohortYear: "", status: "active", destination: "", mentorId: "", relationScope: "lineage" });
+const memberForm = ref({ name: "", cohortYear: String(new Date().getFullYear()), status: "active", memberType: "formal" as "formal" | "probationary", destination: "", mentorId: "", relationScope: "lineage" });
+const accountForm = ref({ personId: "", email: "", phone: "", password: "", role: "member" });
 const resetPasswords = ref<Record<string, string>>({});
 
 const tabs: { id: Tab; label: string }[] = [
   { id: "members", label: "成员与账号" },
-  { id: "cohorts", label: "级别" },
   { id: "invites", label: "邀请" },
   { id: "audit", label: "审计日志" },
 ];
@@ -57,11 +54,10 @@ async function loadAll() {
   loading.value = true;
   failure.value = "";
   try {
-    const [memberRows, cohortRows, inviteRows, auditRows] = await Promise.all([
-      api<Member[]>("/members"), api<Cohort[]>("/cohorts"), api<Invite[]>("/invites"), api<AuditLog[]>("/audit-logs?limit=100"),
+    const [memberRows, inviteRows, auditRows] = await Promise.all([
+      api<Member[]>("/members"), api<Invite[]>("/invites"), api<AuditLog[]>("/audit-logs?limit=100"),
     ]);
     members.value = memberRows;
-    cohorts.value = cohortRows;
     invites.value = inviteRows;
     logs.value = auditRows;
   } catch (cause) {
@@ -92,20 +88,20 @@ async function mutate(key: string, task: () => Promise<unknown>, message: string
 async function createMember() {
   const ok = await mutate("member-new", () => api("/members", { method: "POST", body: JSON.stringify({
     ...memberForm.value,
-    cohortId: memberForm.value.cohortId || null,
+    cohortYear: memberForm.value.cohortYear ? Number(memberForm.value.cohortYear) : null,
     mentorId: memberForm.value.mentorId || null,
     destination: memberForm.value.destination || null,
   }) }), "人物已加入星谱", true);
-  if (ok) memberForm.value = { name: "", cohortId: "", status: "active", memberType: "formal", destination: "", mentorId: "", relationScope: "lineage" };
+  if (ok) memberForm.value = { name: "", cohortYear: String(new Date().getFullYear()), status: "active", memberType: "formal", destination: "", mentorId: "", relationScope: "lineage" };
 }
 
 function editMember(member: Member) {
   editingId.value = member.id;
   editForm.value = {
-    name: member.name, nickname: member.nickname ?? "", bio: member.bio, role: member.role, memberType: member.member_type ?? "formal",
+    name: member.name, bio: member.bio, role: member.role, memberType: member.member_type ?? "formal",
     isFeatured: Boolean(member.is_featured), featuredNote: member.featured_note ?? "",
     tags: (() => { try { return (JSON.parse(member.tags_json) as string[]).join("、"); } catch { return ""; } })(),
-    cohortId: member.cohort_id ?? "", status: member.status,
+    cohortYear: member.cohort_year == null ? "" : String(member.cohort_year), status: member.status,
     destination: member.destination ?? "", mentorId: member.mentor_id ?? "", relationScope: member.relation_scope,
   };
 }
@@ -113,29 +109,12 @@ function editMember(member: Member) {
 async function saveMember(member: Member) {
   const ok = await mutate(`member-${member.id}`, () => api(`/members/${encodeURIComponent(member.id)}`, {
     method: "PATCH",
-    body: JSON.stringify({ ...editForm.value, version: member.version, nickname: editForm.value.nickname || null,
+    body: JSON.stringify({ ...editForm.value, version: member.version,
       featuredNote: editForm.value.featuredNote || null, memberType: editForm.value.memberType,
       tags: editForm.value.tags.split(/[、,，]/).map((tag) => tag.trim()).filter(Boolean),
-      cohortId: editForm.value.cohortId || null, mentorId: editForm.value.mentorId || null, destination: editForm.value.destination || null }),
+      cohortYear: editForm.value.cohortYear ? Number(editForm.value.cohortYear) : null, mentorId: editForm.value.mentorId || null, destination: editForm.value.destination || null }),
   }), "成员资料已保存", true);
   if (ok) editingId.value = "";
-}
-
-async function createCohort() {
-  const ok = await mutate("cohort-new", () => api("/cohorts", { method: "POST", body: JSON.stringify(cohortForm.value) }), "级别已创建", true);
-  if (ok) cohortForm.value = { label: "", year: new Date().getFullYear(), sortOrder: new Date().getFullYear(), description: "" };
-}
-
-async function saveCohort(cohort: Cohort) {
-  await mutate(`cohort-${cohort.id}`, () => api(`/cohorts/${encodeURIComponent(cohort.id)}`, {
-    method: "PATCH",
-    body: JSON.stringify({ label: cohort.label, year: cohort.year, sortOrder: Number(cohort.sort_order), description: cohort.description }),
-  }), "级别已保存", true);
-}
-
-async function deleteCohort(cohort: Cohort) {
-  if (cohort.member_count > 0 || !window.confirm(`删除级别“${cohort.label}”？`)) return;
-  await mutate(`cohort-${cohort.id}`, () => api(`/cohorts/${encodeURIComponent(cohort.id)}`, { method: "DELETE" }), "级别已删除", true);
 }
 
 async function setAccountStatus(member: Member) {
@@ -166,7 +145,7 @@ async function resetPassword(member: Member) {
 
 async function createAccount() {
   const ok = await mutate("account-new", () => api("/accounts", { method: "POST", body: JSON.stringify(accountForm.value) }), "账号已创建");
-  if (ok) accountForm.value = { personId: "", email: "", password: "", role: "member" };
+  if (ok) accountForm.value = { personId: "", email: "", phone: "", password: "", role: "member" };
 }
 
 async function revokeInvite(invite: Invite) {
@@ -205,7 +184,7 @@ onMounted(loadAll);
       <form class="admin-form new-member" @submit.prevent="createMember">
         <h2>新增无账号人物</h2>
         <label>姓名<input v-model.trim="memberForm.name" maxlength="100" required /></label>
-        <label>级别<select v-model="memberForm.cohortId"><option value="">未分级</option><option v-for="cohort in cohorts" :key="cohort.id" :value="cohort.id">{{ cohort.label }}</option></select></label>
+        <label>级别年份<input v-model.trim="memberForm.cohortYear" type="number" min="1900" max="2200" placeholder="例如 2023" /></label>
         <label>状态<select v-model="memberForm.status"><option value="active">在读</option><option value="archived">毕业</option></select></label>
         <label>组员身份<select v-model="memberForm.memberType"><option value="formal">正式组员</option><option value="probationary">预备组员</option></select></label>
         <label>去向<select v-model="memberForm.destination"><option v-for="option in destinationOptions" :key="option[0]" :value="option[0]">{{ option[1] }}</option></select></label>
@@ -219,9 +198,8 @@ onMounted(loadAll);
           <template v-if="editingId === member.id">
             <div class="member-grid editing">
               <label>姓名<input v-model.trim="editForm.name" maxlength="100" /></label>
-              <label>昵称<input v-model.trim="editForm.nickname" maxlength="100" /></label>
               <label>身份说明<input v-model.trim="editForm.role" maxlength="160" /></label>
-              <label>级别<select v-model="editForm.cohortId"><option value="">未分级</option><option v-for="cohort in cohorts" :key="cohort.id" :value="cohort.id">{{ cohort.label }}</option></select></label>
+              <label>级别年份<input v-model.trim="editForm.cohortYear" type="number" min="1900" max="2200" placeholder="例如 2023" /></label>
               <label>状态<select v-model="editForm.status"><option value="active">在读</option><option value="archived">毕业</option></select></label>
               <label>组员身份<select v-model="editForm.memberType"><option value="formal">正式组员</option><option value="probationary">预备组员</option></select></label>
               <label>去向<select v-model="editForm.destination"><option v-for="option in destinationOptions" :key="option[0]" :value="option[0]">{{ option[1] }}</option></select></label>
@@ -254,33 +232,12 @@ onMounted(loadAll);
       <form v-if="accountlessMembers.length" class="admin-form account-form" @submit.prevent="createAccount">
         <h2>为人物建立账号</h2>
         <label>人物<select v-model="accountForm.personId" required><option value="" disabled>选择人物</option><option v-for="member in accountlessMembers" :key="member.id" :value="member.id">{{ member.name }}</option></select></label>
-        <label>邮箱<input v-model.trim="accountForm.email" type="email" required maxlength="254" /></label>
+        <label>邮箱（邮箱或手机号至少填写一项）<input v-model.trim="accountForm.email" type="email" maxlength="254" /></label>
+        <label>手机号（可选）<input v-model.trim="accountForm.phone" type="tel" maxlength="30" autocomplete="tel" /></label>
         <label>初始密码<input v-model="accountForm.password" type="password" required minlength="8" maxlength="100" autocomplete="new-password" /></label>
         <label>权限<select v-model="accountForm.role"><option value="member">成员</option><option value="admin">管理员</option></select></label>
         <button class="primary-button" type="submit" :disabled="saving === 'account-new'">建立账号</button>
       </form>
-    </template>
-
-    <template v-else-if="tab === 'cohorts'">
-      <form class="admin-form cohort-new" @submit.prevent="createCohort">
-        <h2>新增级别</h2>
-        <label>名称<input v-model.trim="cohortForm.label" maxlength="100" required placeholder="例如 2027级" /></label>
-        <label>年份<input v-model.number="cohortForm.year" type="number" min="1900" max="2200" /></label>
-        <label>排序<input v-model.number="cohortForm.sortOrder" type="number" /></label>
-        <label class="wide">说明<textarea v-model="cohortForm.description" maxlength="1000" rows="2"></textarea></label>
-        <button class="primary-button" type="submit" :disabled="saving === 'cohort-new'">新增级别</button>
-      </form>
-      <div class="cohort-list">
-        <article v-for="cohort in cohorts" :key="cohort.id" class="cohort-row">
-          <input v-model.trim="cohort.label" aria-label="级别名称" maxlength="100" />
-          <input v-model.number="cohort.year" aria-label="年份" type="number" min="1900" max="2200" />
-          <input v-model.number="cohort.sort_order" aria-label="排序" type="number" />
-          <input v-model.trim="cohort.description" aria-label="级别说明" maxlength="1000" />
-          <span>{{ cohort.member_count }} 人</span>
-          <button type="button" :disabled="saving === `cohort-${cohort.id}`" @click="saveCohort(cohort)">保存</button>
-          <button type="button" :disabled="cohort.member_count > 0 || saving === `cohort-${cohort.id}`" title="仅空级别可删除" @click="deleteCohort(cohort)">删除</button>
-        </article>
-      </div>
     </template>
 
     <div v-else-if="tab === 'invites'" class="table-shell">
