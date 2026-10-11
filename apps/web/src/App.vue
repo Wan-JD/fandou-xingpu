@@ -640,7 +640,6 @@ onUnmounted(() => {
       <div class="header-meta">
         <span class="status-dot" :class="{ offline: apiFailed }"></span>
         <span>{{ apiFailed ? "星谱暂离线" : "星谱已连接" }}</span>
-        <span class="read-only">公开档案</span>
         <button class="account-entry" type="button" :disabled="sessionLoading" @click="openMyProfile">
           <span class="account-orb" aria-hidden="true"></span>
           {{ sessionLoading ? "读取账号" : (sessionUser?.displayName ?? "登录 / 加入") }}
@@ -780,7 +779,7 @@ onUnmounted(() => {
           </div>
         </template>
       </section>
-      <footer class="page-footer"><span>翻斗星谱 · 公开档案</span><span>成员资料持续更新中</span></footer>
+      <footer class="page-footer"><span>翻斗星谱</span><span>成员资料持续更新中</span></footer>
     </main>
     <main v-else class="detail-page" aria-live="polite">
       <button class="back-link" type="button" @click="navigate('/')">← 返回星谱</button>
@@ -795,7 +794,7 @@ onUnmounted(() => {
           <p class="detail-role">{{ detail.role }}</p>
           <span v-if="detail.destination" class="destination-badge detail-destination" :class="destinationClass(detail)">去向 · {{ destinationLabel(detail) }}</span>
           <div class="tag-row"><span v-for="tag in detail.tags" :key="tag" class="tag">{{ tag }}</span></div>
-          <span class="record-note" :class="{ graduated: detail.status === 'archived' }"><i></i>{{ relationLabel(detail) }} · 公开档案</span>
+          <span class="record-note" :class="{ graduated: detail.status === 'archived' }"><i></i>{{ relationLabel(detail) }}</span>
           <button v-if="isOwnDetail" class="profile-edit-trigger" type="button" @click="startProfileEdit">编辑我的资料</button>
           <p v-if="isOwnDetail && profileSaved" class="profile-success" role="status">资料已保存</p>
         </section>
