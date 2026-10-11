@@ -12,6 +12,7 @@ type Cohort = { id: string; label: string; year: number | null; sortOrder: numbe
 type Achievement = { id: string; kind: "achievement" | "honor"; title: string; content: string; occurredOn: string | null; version: number };
 type Attachment = { id: string; originalName: string; mimeType: string; size: number; category: string; visibility: string; url: string | null };
 type ProfileLink = { label: string; url: string };
+type UploadCategory = "avatar" | "resume" | "photo" | "certificate";
 type Person = { id: string; name: string; nickname: string | null; avatarUrl: string | null; cohort: Cohort | null; relationScope: "lineage" | "cohort_guest"; isFeatured: boolean; status: Status; destination: Destination | null; mentorId: string | null; depth: number | null; directStudentIds: string[]; role: string; joinedAt: string; tags: string[]; bio: string; contactEmail?: string | null; education?: string | null; experience?: string | null; skills?: string[]; links?: ProfileLink[]; resume?: Attachment | null; version?: number; mentor?: Person | null; students?: Person[]; achievements?: Achievement[]; attachments?: Attachment[]; featuredNote?: string | null };
 type Edge = { id: string; mentorId: string; studentId: string };
 type Tree = { rootPersonId: string | null; nodes: Person[]; edges: Edge[]; generatedAt: string };
@@ -60,7 +61,6 @@ const achievementForm = ref({ kind: "achievement" as "achievement" | "honor", ti
 const achievementSaving = ref(false);
 const uploadSaving = ref(false);
 const uploadError = ref("");
-const uploadCategory = ref<"avatar" | "resume" | "photo">("photo");
 const attachmentBusyId = ref<string | null>(null);
 const attachmentError = ref("");
 const attachmentObjectUrls = new Set<string>();
@@ -203,6 +203,13 @@ const detailStudents = computed(() => {
 });
 const detailAchievements = computed(() => detail.value?.achievements ?? []);
 const detailAttachments = computed(() => detail.value?.attachments ?? []);
+const uploadCards: Array<{ category: UploadCategory; title: string; description: string; accept: string }> = [
+  { category: "avatar", title: "头像", description: "用于星谱节点和个人页展示，支持 JPG、PNG、WebP。", accept: "image/jpeg,image/png,image/webp" },
+  { category: "resume", title: "简历", description: "上传一份 PDF 简历，方便成员了解你的经历。", accept: "application/pdf" },
+  { category: "photo", title: "照片", description: "记录旅途、活动或作品照片，支持 JPG、PNG、WebP。", accept: "image/jpeg,image/png,image/webp" },
+  { category: "certificate", title: "证书 / 证明", description: "上传证书或证明材料，支持图片和 PDF。", accept: "image/jpeg,image/png,image/webp,application/pdf" },
+];
+const attachmentsFor = (category: UploadCategory) => detailAttachments.value.filter((item) => item.category === category);
 const visibleLinks = computed(() => links.value.filter((link) => !query.value || matchingIds.value.has(link.mentorId) || matchingIds.value.has(link.studentId)));
 const isVisible = (person: Person) => matchingIds.value.has(person.id);
 const relationLabel = (person: Person) => person.status === "archived" ? "毕业" : "在读";
@@ -402,19 +409,19 @@ async function addAchievement() {
   } catch (error) { uploadError.value = error instanceof Error ? error.message : "事迹保存失败"; }
   finally { achievementSaving.value = false; }
 }
-async function uploadAttachment(event: Event) {
+async function uploadAttachment(event: Event, category: UploadCategory) {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
   if (!file || !sessionToken.value || !isOwnDetail.value) return;
   uploadSaving.value = true; uploadError.value = ""; attachmentError.value = "";
   try {
-    const form = new FormData(); form.append("file", file); form.append("category", uploadCategory.value); form.append("visibility", "members");
+    const form = new FormData(); form.append("file", file); form.append("category", category); form.append("visibility", "members");
     const response = await fetch("/api/me/attachments", { method: "POST", headers: { Authorization: `Bearer ${sessionToken.value}` }, body: form });
     if (!response.ok) throw new Error(await apiErrorMessage(response, "附件上传失败"));
     const payload = await response.json() as { data?: Attachment };
     if (payload.data && detailPerson.value) {
-      detailPerson.value = { ...detailPerson.value, avatarUrl: uploadCategory.value === "avatar" ? `/api/attachments/${payload.data.id}` : detailPerson.value.avatarUrl, resume: uploadCategory.value === "resume" ? payload.data : detailPerson.value.resume, attachments: [payload.data, ...(detailPerson.value.attachments ?? [])] };
-      if (uploadCategory.value === "avatar") tree.value.nodes = tree.value.nodes.map((node) => node.id === detailPerson.value?.id ? { ...node, avatarUrl: `/api/attachments/${payload.data!.id}` } : node);
+      detailPerson.value = { ...detailPerson.value, avatarUrl: category === "avatar" ? `/api/attachments/${payload.data.id}` : detailPerson.value.avatarUrl, resume: category === "resume" ? payload.data : detailPerson.value.resume, attachments: [payload.data, ...(detailPerson.value.attachments ?? [])] };
+      if (category === "avatar") tree.value.nodes = tree.value.nodes.map((node) => node.id === detailPerson.value?.id ? { ...node, avatarUrl: `/api/attachments/${payload.data!.id}` } : node);
     }
   } catch (error) { uploadError.value = error instanceof Error ? error.message : "附件上传失败"; }
   finally { uploadSaving.value = false; input.value = ""; }
@@ -660,7 +667,6 @@ onUnmounted(() => {
       <section class="hero">
         <p class="eyebrow">THE LINEAGE CONSTELLATION</p>
         <h1>让每颗星，<em>找到自己的轨道。</em></h1>
-        <p class="hero-description">上一届是下一届的师傅。同届成员并肩排列，跨届的牵引会沿着更长的轨迹抵达。</p>
         <div class="hero-stats">
           <div><strong>{{ people.length }}</strong><span>颗星</span></div>
           <div><strong>{{ groups.length }}</strong><span>条届次轨道</span></div>
@@ -822,6 +828,31 @@ onUnmounted(() => {
               <label class="form-field"><span>工作 / 项目经历</span><textarea v-model="profileForm.experience" maxlength="20000" rows="4" placeholder="可留空"></textarea></label>
               <label class="form-field"><span>技能（用逗号分隔）</span><input v-model="profileForm.skills" maxlength="2400" placeholder="例如：产品设计，TypeScript，写作" /></label>
               <label class="form-field"><span>个人链接（每行：名称 | URL）</span><textarea v-model="profileForm.links" maxlength="10000" rows="3" placeholder="作品集 | https://example.com"></textarea></label>
+              <div class="profile-upload-panel">
+                <div class="profile-upload-heading">
+                  <div><span class="section-label">资料附件</span><p>每一类资料单独上传，上传后会立即出现在你的个人页。</p></div>
+                  <span class="profile-upload-count">{{ detailAttachments.length }} 份</span>
+                </div>
+                <div class="profile-upload-grid">
+                  <article v-for="card in uploadCards" :key="card.category" class="profile-upload-card" :class="`upload-${card.category}`">
+                    <div class="profile-upload-card-top">
+                      <span class="upload-card-icon" aria-hidden="true">{{ card.category === 'avatar' ? '✦' : card.category === 'resume' ? '▤' : card.category === 'photo' ? '◌' : '◇' }}</span>
+                      <div><h3>{{ card.title }}</h3><p>{{ card.description }}</p></div>
+                    </div>
+                    <div v-if="attachmentsFor(card.category).length" class="profile-upload-current">
+                      <span class="upload-current-dot"></span>
+                      <span class="upload-current-name">{{ attachmentsFor(card.category)[0].originalName }}</span>
+                      <span v-if="attachmentsFor(card.category).length > 1" class="upload-current-count">+{{ attachmentsFor(card.category).length - 1 }}</span>
+                    </div>
+                    <div v-else class="profile-upload-empty">还没有上传</div>
+                    <label class="profile-upload-button">
+                      <span>{{ uploadSaving ? '处理中…' : attachmentsFor(card.category).length ? '替换文件' : '选择文件' }}</span>
+                      <input type="file" :accept="card.accept" :disabled="uploadSaving" @change="uploadAttachment($event, card.category)" />
+                    </label>
+                  </article>
+                </div>
+                <p v-if="uploadError" class="form-error" role="alert">{{ uploadError }}</p>
+              </div>
               <p v-if="profileError" class="form-error" role="alert">{{ profileError }}</p>
               <div class="form-actions">
                 <button class="secondary-command" type="button" :disabled="profileSaving" @click="cancelProfileEdit">取消</button>
@@ -872,8 +903,7 @@ onUnmounted(() => {
             <form v-if="isOwnDetail && sessionToken" class="content-editor" @submit.prevent="addAchievement">
               <div class="content-editor-row"><select v-model="achievementForm.kind"><option value="achievement">事迹</option><option value="honor">荣誉</option></select><input v-model.trim="achievementForm.title" maxlength="200" placeholder="标题" required /></div>
               <textarea v-model.trim="achievementForm.content" maxlength="20000" rows="3" placeholder="写下这段经历" required></textarea>
-              <div class="form-actions"><select v-model="uploadCategory" class="upload-category"><option value="avatar">头像</option><option value="resume">简历</option><option value="photo">照片</option></select><label class="upload-button">{{ uploadSaving ? '上传中…' : '上传文件' }}<input type="file" :accept="uploadCategory === 'resume' ? 'application/pdf' : 'image/jpeg,image/png,image/webp'" :disabled="uploadSaving" @change="uploadAttachment" /></label><button class="primary-command" type="submit" :disabled="achievementSaving">{{ achievementSaving ? '保存中…' : '添加记录' }}</button></div>
-              <p v-if="uploadError" class="form-error" role="alert">{{ uploadError }}</p>
+              <div class="form-actions"><button class="primary-command" type="submit" :disabled="achievementSaving">{{ achievementSaving ? '保存中…' : '添加记录' }}</button></div>
               <p v-if="attachmentError" class="form-error" role="alert">{{ attachmentError }}</p>
             </form>
           </article>
