@@ -138,6 +138,12 @@ async function deleteAccount(member: Member) {
   await mutate(`delete-account-${member.account_id}`, () => api(`/accounts/${encodeURIComponent(member.account_id!)}`, { method: "DELETE" }), "账号和人物档案已删除", true);
 }
 
+async function deleteMember(member: Member) {
+  if (member.account_id) return;
+  if (!window.confirm(`彻底删除 ${member.name} 的人物档案？头像、简历、成就、邀请及其他资料都会删除，且无法恢复。`)) return;
+  await mutate(`delete-member-${member.id}`, () => api(`/members/${encodeURIComponent(member.id)}`, { method: "DELETE" }), "人物档案已删除", true);
+}
+
 async function setAccountRole(member: Member, role: "member" | "admin") {
   if (!member.account_id || member.account_role === role) return;
   await mutate(`role-${member.account_id}`, () => api(`/accounts/${encodeURIComponent(member.account_id!)}/role`, {
@@ -233,7 +239,10 @@ onMounted(loadAll);
                 <input v-model="resetPasswords[member.account_id]" type="password" minlength="8" maxlength="100" autocomplete="new-password" placeholder="输入新密码" aria-label="新密码" />
                 <button type="button" :disabled="saving === `password-${member.account_id}`" @click="resetPassword(member)">重置密码</button>
               </template>
-              <span v-else>尚未绑定账号</span>
+              <template v-else>
+                <span>尚未绑定账号</span>
+                <button type="button" :disabled="saving === `delete-member-${member.id}`" @click="deleteMember(member)">彻底删除人物</button>
+              </template>
             </div>
             <button class="edit-button" type="button" title="编辑成员" @click="editMember(member)">编辑</button>
           </template>

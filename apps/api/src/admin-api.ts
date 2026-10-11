@@ -32,6 +32,13 @@ type MemberRow = {
   account_status: "active" | "disabled" | null;
 };
 
+type AccountRow = {
+  id: string;
+  role: "member" | "admin";
+  status: "active" | "disabled";
+  person_id: string | null;
+};
+
 const destinations = new Set(["big_tech", "postgraduate_985", "postgraduate_211", "startup", "further_study", "other"]);
 const personStatuses = new Set(["active", "archived"]);
 
@@ -52,6 +59,53 @@ function audit(db: D1Database, actorId: string, action: string, targetType: stri
     INSERT INTO admin_audit_logs (id, actor_user_id, action, target_type, target_id, details_json)
     VALUES (?, ?, ?, ?, ?, ?)
   `).bind(`audit-${crypto.randomUUID()}`, actorId, action, targetType, targetId, JSON.stringify(details));
+}
+
+async function deletePersonAndAccount(
+  env: Env,
+  actor: AdminVariables["adminUser"],
+  personId: string | null,
+  account: AccountRow | null,
+) {
+  const db = env.DB!;
+  if (account?.id === actor.id) return error(409, "CANNOT_DELETE_SELF", "不能删除自己的账号");
+  if (account?.role === "admin" && account.status === "active") {
+    const remaining = await db.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND status = 'active' AND id <> ?")
+      .bind(account.id).first<{ count: number }>();
+    if (Number(remaining?.count ?? 0) === 0) return error(409, "LAST_ADMIN", "不能删除最后一位管理员");
+  }
+  if (personId) {
+    const students = await db.prepare("SELECT COUNT(*) AS count FROM people WHERE mentor_id = ?")
+      .bind(personId).first<{ count: number }>();
+    if (Number(students?.count ?? 0) > 0) return error(409, "PERSON_HAS_STUDENTS", "该人物仍有徒弟，请先处理师徒关系后再删除");
+  }
+
+  const attachmentRows = personId
+    ? await db.prepare("SELECT object_key FROM attachments WHERE person_id = ? AND status <> 'deleted'").bind(personId).all<{ object_key: string }>()
+    : { results: [] as { object_key: string }[] };
+  const targetId = account?.id ?? personId!;
+  await db.batch([
+    db.prepare("DELETE FROM invitations WHERE created_by_user_id = ? OR mentor_id = ? OR accepted_person_id = ?")
+      .bind(account?.id ?? null, personId, personId),
+    ...(account ? [db.prepare("DELETE FROM users WHERE id = ?").bind(account.id)] : []),
+    ...(personId ? [db.prepare("DELETE FROM people WHERE id = ?").bind(personId)] : []),
+    audit(db, actor.id, personId ? "person.delete" : "account.delete", personId ? "person" : "user", targetId, {
+      accountId: account?.id ?? null,
+      personId,
+      accountDeleted: Boolean(account),
+      personDeleted: Boolean(personId),
+    }),
+  ]);
+  if (env.FILES && attachmentRows.results.length) {
+    await env.FILES.delete(attachmentRows.results.map((row) => row.object_key));
+  }
+  return {
+    id: targetId,
+    accountId: account?.id ?? null,
+    personId,
+    accountDeleted: Boolean(account),
+    personDeleted: Boolean(personId),
+  };
 }
 
 async function mentorProblem(db: D1Database, personId: string, mentorId: string | null, relationScope: "lineage" | "cohort_guest") {
@@ -255,6 +309,18 @@ adminApi.patch("/members/:id", async (c) => {
   return c.json({ data: { id: personId } });
 });
 
+adminApi.delete("/members/:id", async (c) => {
+  const personId = c.req.param("id");
+  if (!await c.env.DB!.prepare("SELECT id FROM people WHERE id = ?").bind(personId).first()) {
+    return error(404, "PERSON_NOT_FOUND", "人物不存在");
+  }
+  const account = await c.env.DB!.prepare("SELECT id, role, status, person_id FROM users WHERE person_id = ?")
+    .bind(personId).first<AccountRow>();
+  const result = await deletePersonAndAccount(c.env, c.get("adminUser"), personId, account ?? null);
+  if (result instanceof Response) return result;
+  return c.json({ data: result });
+});
+
 adminApi.get("/cohorts", async (c) => {
   const rows = await c.env.DB!.prepare(`
     SELECT COALESCE(p.cohort_year, c.year) AS year, COUNT(p.id) AS member_count
@@ -349,35 +415,11 @@ adminApi.patch("/accounts/:id/status", async (c) => {
 adminApi.delete("/accounts/:id", async (c) => {
   const id = c.req.param("id");
   const account = await c.env.DB!.prepare("SELECT id, role, status, person_id FROM users WHERE id = ?")
-    .bind(id).first<{ id: string; role: "member" | "admin"; status: "active" | "disabled"; person_id: string | null }>();
+    .bind(id).first<AccountRow>();
   if (!account) return error(404, "ACCOUNT_NOT_FOUND", "账号不存在");
-  const actor = c.get("adminUser");
-  if (id === actor.id) return error(409, "CANNOT_DELETE_SELF", "不能删除自己的账号");
-  if (account.role === "admin" && account.status === "active") {
-    const remaining = await c.env.DB!.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND status = 'active' AND id <> ?")
-      .bind(id).first<{ count: number }>();
-    if (Number(remaining?.count ?? 0) === 0) return error(409, "LAST_ADMIN", "不能删除最后一位管理员");
-  }
-  if (account.person_id) {
-    const students = await c.env.DB!.prepare("SELECT COUNT(*) AS count FROM people WHERE mentor_id = ?")
-      .bind(account.person_id).first<{ count: number }>();
-    if (Number(students?.count ?? 0) > 0) return error(409, "PERSON_HAS_STUDENTS", "该人物仍有徒弟，请先处理师徒关系后再删除");
-  }
-  const personId = account.person_id;
-  const attachmentRows = personId
-    ? await c.env.DB!.prepare("SELECT object_key FROM attachments WHERE person_id = ? AND status <> 'deleted'").bind(personId).all<{ object_key: string }>()
-    : { results: [] as { object_key: string }[] };
-  await c.env.DB!.batch([
-    c.env.DB!.prepare("DELETE FROM invitations WHERE created_by_user_id = ? OR mentor_id = ? OR accepted_person_id = ?")
-      .bind(id, personId, personId),
-    c.env.DB!.prepare("DELETE FROM users WHERE id = ?").bind(id),
-    ...(personId ? [c.env.DB!.prepare("DELETE FROM people WHERE id = ?").bind(personId)] : []),
-    audit(c.env.DB!, actor.id, "account.delete", "user", id, { personId, personDeleted: Boolean(personId) }),
-  ]);
-  if (c.env.FILES && attachmentRows.results.length) {
-    await c.env.FILES.delete(attachmentRows.results.map((row) => row.object_key));
-  }
-  return c.json({ data: { id, personId, personDeleted: Boolean(personId) } });
+  const result = await deletePersonAndAccount(c.env, c.get("adminUser"), account.person_id, account);
+  if (result instanceof Response) return result;
+  return c.json({ data: result });
 });
 
 adminApi.patch("/accounts/:id/role", async (c) => {

@@ -238,6 +238,14 @@ const accountId = accountCreated.payload.data.id;
 assert.equal((await request(`/api/admin/accounts/${accountId}/status`, { token: admin.token, method: "PATCH", body: { status: "disabled" } })).response.status, 200);
 assert.equal((await request("/api/session", { token: memberSession.token })).response.status, 401);
 assert.equal((await request(`/api/admin/accounts/${accountId}`, { token: admin.token, method: "DELETE" })).response.status, 409, "accounts with students must be blocked from destructive deletion");
+assert.equal((await request(`/api/admin/members/${parentId}`, { token: admin.token, method: "DELETE" })).response.status, 409, "people with students must be blocked from destructive deletion");
+
+const accountlessPersonId = await createPerson(`Smoke accountless deletion target ${runId}`);
+const deletedAccountlessPerson = await request(`/api/admin/members/${accountlessPersonId}`, { token: admin.token, method: "DELETE" });
+assert.equal(deletedAccountlessPerson.response.status, 200, JSON.stringify(deletedAccountlessPerson.payload));
+assert.equal(deletedAccountlessPerson.payload.data.accountDeleted, false);
+assert.equal(deletedAccountlessPerson.payload.data.personDeleted, true);
+assert.equal((await request(`/api/people/${accountlessPersonId}`)).response.status, 404);
 
 const deletablePersonId = await createPerson(`Smoke deletion target ${runId}`);
 const deletableAccount = await request("/api/admin/accounts", { token: admin.token, method: "POST", body: {
@@ -248,6 +256,18 @@ const deletedAccount = await request(`/api/admin/accounts/${deletableAccount.pay
 assert.equal(deletedAccount.response.status, 200, JSON.stringify(deletedAccount.payload));
 assert.equal(deletedAccount.payload.data.personDeleted, true);
 assert.equal((await request(`/api/people/${deletablePersonId}`)).response.status, 404);
+
+const memberDeletePersonId = await createPerson(`Smoke member endpoint deletion target ${runId}`);
+const memberDeleteAccount = await request("/api/admin/accounts", { token: admin.token, method: "POST", body: {
+  personId: memberDeletePersonId, email: `member-delete-${runId}@example.com`, password: "delete-password-2026", role: "member",
+} });
+assert.equal(memberDeleteAccount.response.status, 201, JSON.stringify(memberDeleteAccount.payload));
+const memberDeleteSession = await login(`member-delete-${runId}@example.com`, "delete-password-2026");
+const deletedMemberWithAccount = await request(`/api/admin/members/${memberDeletePersonId}`, { token: admin.token, method: "DELETE" });
+assert.equal(deletedMemberWithAccount.response.status, 200, JSON.stringify(deletedMemberWithAccount.payload));
+assert.equal(deletedMemberWithAccount.payload.data.accountDeleted, true);
+assert.equal((await request("/api/session", { token: memberDeleteSession.token })).response.status, 401);
+assert.equal((await request(`/api/people/${memberDeletePersonId}`)).response.status, 404);
 assert.equal((await request(`/api/admin/accounts/${admin.user.id}/status`, { token: admin.token, method: "PATCH", body: { status: "disabled" } })).response.status, 409);
 assert.equal((await request(`/api/admin/accounts/${admin.user.id}/role`, { token: admin.token, method: "PATCH", body: { role: "member" } })).response.status, 409);
 
