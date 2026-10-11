@@ -25,7 +25,6 @@ const sqlValue = (value) => `'${String(value).replaceAll("'", "''")}'`;
 const sql = `-- Generated locally. Contains password-derived credentials; do not commit.
 -- Enforces exactly one active administrator: ${requiredEmail}.
 PRAGMA foreign_keys = ON;
-BEGIN TRANSACTION;
 -- Rotate all administrator sessions before changing roles or credentials.
 DELETE FROM auth_sessions
 WHERE user_id IN (SELECT id FROM users WHERE role = 'admin' OR lower(COALESCE(email, '')) = ${sqlValue(email)});
@@ -71,8 +70,6 @@ UPDATE users SET role = 'admin', status = 'active', display_name = ${sqlValue(na
   password_salt = ${sqlValue(credentials.passwordSalt)}, password_hash = ${sqlValue(credentials.passwordHash)},
   updated_at = datetime('now')
 WHERE lower(email) = ${sqlValue(email)};
-
-COMMIT;
 `;
 
 mkdirSync(outputDirectory, { recursive: true });

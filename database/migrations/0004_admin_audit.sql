@@ -22,39 +22,53 @@ CREATE INDEX admin_audit_logs_actor_idx ON admin_audit_logs(actor_user_id, creat
 CREATE TRIGGER people_mentor_guard_insert
 BEFORE INSERT ON people
 BEGIN
-  SELECT CASE
-    WHEN NEW.relation_scope = 'cohort_guest' AND NEW.mentor_id IS NOT NULL THEN RAISE(ABORT, 'SCOPE_MENTOR_CONFLICT')
-    WHEN NEW.mentor_id IS NOT NULL AND NEW.mentor_id = NEW.id THEN RAISE(ABORT, 'MENTOR_SELF')
-    WHEN NEW.mentor_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM people WHERE id = NEW.mentor_id) THEN RAISE(ABORT, 'MENTOR_NOT_FOUND')
-    WHEN NEW.mentor_id IS NOT NULL AND NEW.relation_scope = 'lineage' AND EXISTS (
-      SELECT 1 FROM people WHERE id = NEW.mentor_id AND relation_scope <> 'lineage'
-    ) THEN RAISE(ABORT, 'MENTOR_NOT_LINEAGE')
-  END;
+  SELECT RAISE(ABORT, 'SCOPE_MENTOR_CONFLICT')
+    WHERE NEW.relation_scope = 'cohort_guest' AND NEW.mentor_id IS NOT NULL;
+  SELECT RAISE(ABORT, 'MENTOR_SELF')
+    WHERE NEW.mentor_id IS NOT NULL AND NEW.mentor_id = NEW.id;
+  SELECT RAISE(ABORT, 'MENTOR_NOT_FOUND')
+    WHERE NEW.mentor_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM people WHERE id = NEW.mentor_id);
+  SELECT RAISE(ABORT, 'MENTOR_NOT_LINEAGE')
+    WHERE NEW.mentor_id IS NOT NULL
+      AND NEW.relation_scope = 'lineage'
+      AND EXISTS (
+        SELECT 1 FROM people WHERE id = NEW.mentor_id AND relation_scope <> 'lineage'
+      );
 END;
 
 CREATE TRIGGER people_mentor_guard_update
 BEFORE UPDATE OF mentor_id, relation_scope ON people
 BEGIN
-  SELECT CASE
-    WHEN NEW.relation_scope = 'cohort_guest' AND NEW.mentor_id IS NOT NULL THEN RAISE(ABORT, 'SCOPE_MENTOR_CONFLICT')
-    WHEN NEW.mentor_id IS NOT NULL AND NEW.mentor_id = NEW.id THEN RAISE(ABORT, 'MENTOR_SELF')
-    WHEN NEW.mentor_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM people WHERE id = NEW.mentor_id) THEN RAISE(ABORT, 'MENTOR_NOT_FOUND')
-    WHEN NEW.mentor_id IS NOT NULL AND NEW.relation_scope = 'lineage' AND EXISTS (
-      SELECT 1 FROM people WHERE id = NEW.mentor_id AND relation_scope <> 'lineage'
-    ) THEN RAISE(ABORT, 'MENTOR_NOT_LINEAGE')
-    WHEN NEW.relation_scope = 'cohort_guest' AND EXISTS (
-      SELECT 1 FROM people WHERE mentor_id = NEW.id AND relation_scope = 'lineage'
-    ) THEN RAISE(ABORT, 'HAS_LINEAGE_STUDENTS')
-    WHEN NEW.mentor_id IS NOT NULL AND EXISTS (
-      WITH RECURSIVE ancestors(id) AS (
-        SELECT NEW.mentor_id
-        UNION
-        SELECT p.mentor_id
-        FROM people p
-        JOIN ancestors a ON p.id = a.id
-        WHERE p.mentor_id IS NOT NULL
-      )
-      SELECT 1 FROM ancestors WHERE id = NEW.id
-    ) THEN RAISE(ABORT, 'MENTOR_CYCLE')
-  END;
+  SELECT RAISE(ABORT, 'SCOPE_MENTOR_CONFLICT')
+    WHERE NEW.relation_scope = 'cohort_guest' AND NEW.mentor_id IS NOT NULL;
+  SELECT RAISE(ABORT, 'MENTOR_SELF')
+    WHERE NEW.mentor_id IS NOT NULL AND NEW.mentor_id = NEW.id;
+  SELECT RAISE(ABORT, 'MENTOR_NOT_FOUND')
+    WHERE NEW.mentor_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM people WHERE id = NEW.mentor_id);
+  SELECT RAISE(ABORT, 'MENTOR_NOT_LINEAGE')
+    WHERE NEW.mentor_id IS NOT NULL
+      AND NEW.relation_scope = 'lineage'
+      AND EXISTS (
+        SELECT 1 FROM people WHERE id = NEW.mentor_id AND relation_scope <> 'lineage'
+      );
+  SELECT RAISE(ABORT, 'HAS_LINEAGE_STUDENTS')
+    WHERE NEW.relation_scope = 'cohort_guest'
+      AND EXISTS (
+        SELECT 1 FROM people WHERE mentor_id = NEW.id AND relation_scope = 'lineage'
+      );
+  SELECT RAISE(ABORT, 'MENTOR_CYCLE')
+    WHERE NEW.mentor_id IS NOT NULL
+      AND EXISTS (
+        WITH RECURSIVE ancestors(id) AS (
+          SELECT NEW.mentor_id
+          UNION
+          SELECT p.mentor_id
+          FROM people p
+          JOIN ancestors a ON p.id = a.id
+          WHERE p.mentor_id IS NOT NULL
+        )
+        SELECT 1 FROM ancestors WHERE id = NEW.id
+      );
 END;

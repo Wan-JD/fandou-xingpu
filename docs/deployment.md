@@ -59,6 +59,8 @@ pnpm db:restore:local
 pnpm --dir apps/api exec wrangler d1 migrations apply DB --remote -c wrangler.production.toml
 ```
 
+D1 远程迁移不接受 SQL `BEGIN TRANSACTION`/`COMMIT`，迁移文件保持为可由 Wrangler 拆分执行的语句；谱系触发器使用多个 `SELECT RAISE(...)` 语句，避免嵌套 `CASE` 造成拆分歧义。
+
 全部迁移包含 `0007`，会精确删除历史 fixture id 并移除旧的账号标记列，不需要再执行 fixture 清理 SQL。
 
 离线生成正式唯一超级管理员 SQL：
@@ -88,10 +90,10 @@ pnpm --dir apps/api exec wrangler deploy -c wrangler.production.toml
 
 ```powershell
 pnpm --dir apps/web build
-pnpm --dir apps/api exec wrangler pages deploy ../../apps/web/dist --project-name fandou-xingpu
+pnpm --dir apps/web exec wrangler pages deploy dist --project-name fandou-xingpu
 ```
 
-Pages 使用 `apps/web/wrangler.toml` 中的 Service Binding 将同源 `/api/*` 转发到 `fandou-xingpu-api` Worker；无需自定义域名即可使用 Pages 域名。`public/_redirects` 将 `/person/*`、`/register` 和 `/admin` 等前端路由回退到 `index.html`。这样浏览器继续使用相对 `/api`，不需要把 API 地址写进前端产物。R2 启用后再把 `FILES` bucket 绑定补到生产 Worker 配置。
+Pages 部署命令从 `apps/web` 执行，以便同时打包 `functions/` 和 `apps/web/wrangler.toml` 中的 Service Binding，将同源 `/api/*` 转发到 `fandou-xingpu-api` Worker；无需自定义域名即可使用 Pages 域名。`public/_redirects` 将 `/person/*`、`/register` 和 `/admin` 等前端路由回退到 `index.html`。这样浏览器继续使用相对 `/api`，不需要把 API 地址写进前端产物。R2 启用后把 `FILES` bucket 绑定到生产 Worker 配置。
 
 上线前执行：
 
