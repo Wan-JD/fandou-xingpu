@@ -94,7 +94,13 @@ accountApi.post("/me/placeholder-students", async (c) => {
   if (!name || name.length > 100 || loginIdentifier.length > 254 || !memberType || (body?.joinedAt && !joinedAt) || (cohortYear !== null && (!Number.isInteger(cohortYear) || cohortYear < 1900 || cohortYear > 2200))) {
     return errorResponse("请检查待认领节点资料", "VALIDATION_ERROR", 400);
   }
-  const result = await store.createPlaceholder(session.user.personId, session.user.id, { name, loginIdentifier: loginIdentifier || null, cohortYear, memberType, joinedAt });
+  const result = await store.createPlaceholder(
+    session.user.personId,
+    session.user.id,
+    { name, loginIdentifier: loginIdentifier || null, cohortYear, memberType, joinedAt },
+    Date.now(),
+    session.user.role === "admin",
+  );
   if (result.state === "mentor-not-found") return errorResponse("师傅档案不存在", "MENTOR_NOT_FOUND", 404);
   if (result.state === "mentor-not-lineage") return errorResponse("只有谱系成员可以代建徒弟节点", "MENTOR_NOT_LINEAGE", 409);
   if (result.state === "invalid-identifier") return errorResponse("登录标识请填写有效邮箱或手机号", "INVALID_IDENTIFIER", 400);

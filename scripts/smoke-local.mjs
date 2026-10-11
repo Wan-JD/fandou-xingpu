@@ -37,6 +37,14 @@ assert.equal((await request("/api/admin/members")).response.status, 401);
 
 const admin = await login(adminEmail, adminPassword);
 assert.equal(admin.user.role, "admin");
+// The super administrator is intentionally stored outside the lineage, but
+// still manages invitations and delegated student accounts.
+const adminInvite = await request("/api/invites", { token: admin.token, method: "POST", body: {} });
+assert.equal(adminInvite.response.status, 201, JSON.stringify(adminInvite.payload));
+const adminPlaceholder = await request("/api/me/placeholder-students", { token: admin.token, method: "POST", body: {
+  name: `Admin student ${runId}`, cohortYear: 2099, memberType: "probationary",
+} });
+assert.equal(adminPlaceholder.response.status, 201, JSON.stringify(adminPlaceholder.payload));
 const ordinaryEmail = `ordinary-${runId}@example.com`;
 const ordinaryPerson = await request("/api/admin/members", { token: admin.token, method: "POST", body: {
   name: `Ordinary ${runId}`, status: "active", destination: null, mentorId: null, relationScope: "cohort_guest",

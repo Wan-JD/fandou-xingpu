@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 
-const props = defineProps<{ mentorId: string; mentorName: string; sessionToken: string }>();
+const props = defineProps<{ mentorId: string; mentorName: string; mentorCohortYear?: number | null; sessionToken: string }>();
 const loading = ref(false);
 const error = ref("");
 const inviteUrl = ref("");
@@ -13,6 +13,7 @@ const placeholders = ref<Placeholder[]>([]);
 const placeholderForm = ref({ name: "", loginIdentifier: "", cohortYear: "", memberType: "probationary" as "formal" | "probationary" });
 const placeholderLoading = ref(false);
 const placeholderError = ref("");
+const placeholderDialogOpen = ref(false);
 const claimPath = ref("");
 const claimCopied = ref(false);
 const createdAccount = ref<{ identifier: string; temporaryPassword: string; mustChangePassword: boolean } | null>(null);
@@ -48,12 +49,28 @@ async function createPlaceholder() {
     placeholderForm.value.name = "";
     placeholderForm.value.loginIdentifier = "";
     placeholderForm.value.cohortYear = "";
+    placeholderDialogOpen.value = false;
     await loadPlaceholders();
   } catch (cause) {
     placeholderError.value = cause instanceof Error ? cause.message : "节点暂时无法创建";
   } finally {
     placeholderLoading.value = false;
   }
+}
+
+function openPlaceholderDialog() {
+  placeholderError.value = "";
+  placeholderForm.value = {
+    name: "",
+    loginIdentifier: "",
+    cohortYear: String((props.mentorCohortYear ?? new Date().getFullYear()) + 1),
+    memberType: "probationary",
+  };
+  placeholderDialogOpen.value = true;
+}
+
+function closePlaceholderDialog() {
+  if (!placeholderLoading.value) placeholderDialogOpen.value = false;
 }
 
 async function copyClaim() {
@@ -148,15 +165,7 @@ async function copyInvite() {
       <section class="invite-mode">
         <span class="invite-mode-label">师傅代建账号</span>
         <p>为暂时不便登记的徒弟保留节点，并把生成的登录凭据交给本人。</p>
-    <form class="placeholder-form" @submit.prevent="createPlaceholder">
-      <label>姓名<input v-model.trim="placeholderForm.name" maxlength="100" required /></label>
-      <label>登录标识（可选）<input v-model.trim="placeholderForm.loginIdentifier" maxlength="254" placeholder="邮箱、手机号；留空则使用姓名登录" autocomplete="username" /></label>
-      <div class="placeholder-row">
-        <label>级别年份（选填）<input v-model.trim="placeholderForm.cohortYear" type="number" min="1900" max="2200" placeholder="例如 2023" /></label>
-        <label>身份<select v-model="placeholderForm.memberType"><option value="probationary">预备组员</option><option value="formal">正式组员</option></select></label>
-      </div>
-      <button class="invite-action" type="submit" :disabled="placeholderLoading || !placeholderForm.name">{{ placeholderLoading ? "正在建立账号" : "建立徒弟账号" }}</button>
-    </form>
+        <button class="invite-action" type="button" @click="openPlaceholderDialog">建立徒弟账号</button>
     <div v-if="createdAccount || claimPath" class="claim-result">
       <strong v-if="createdAccount">账号已建立，请把下面的初始凭据交给徒弟（密码只显示这一次）</strong>
       <div v-if="createdAccount" class="credential-grid">
@@ -170,7 +179,6 @@ async function copyInvite() {
         <button class="invite-action" type="button" @click="copyClaim">{{ claimCopied ? "已复制" : "复制认领链接" }}</button>
       </template>
     </div>
-    <p v-if="placeholderError" class="invite-error" role="alert">{{ placeholderError }}</p>
       </section>
     </div>
     <div v-if="placeholders.length" class="placeholder-list">
@@ -178,6 +186,27 @@ async function copyInvite() {
         <span><strong>{{ item.name }}</strong><small>{{ item.cohort?.label ?? "未分级" }} · {{ item.memberType === "probationary" ? "预备组员" : "正式组员" }}<template v-if="item.account?.identifier"> · 登录：{{ item.account.identifier }}</template></small></span>
         <span class="placeholder-state"><em>{{ item.state === "account-created" ? "账号已建立" : item.state === "claimed" ? "已认领" : item.state === "expired" ? "链接过期" : "等待认领" }}</em><button v-if="item.state !== 'claimed' && item.state !== 'account-created'" type="button" @click="rotateClaim(item.personId)">更新链接</button></span>
       </div>
+    </div>
+    <div v-if="placeholderDialogOpen" class="placeholder-dialog-backdrop" @click.self="closePlaceholderDialog">
+      <section class="placeholder-dialog" role="dialog" aria-modal="true" aria-labelledby="placeholder-dialog-title">
+        <button class="placeholder-dialog-close" type="button" aria-label="关闭代建账号窗口" @click="closePlaceholderDialog">×</button>
+        <span class="invite-label">师傅代建账号</span>
+        <h2 id="placeholder-dialog-title">为徒弟留下一颗星</h2>
+        <p>账号建立后，初始密码只展示一次；徒弟第一次登录时必须修改密码。</p>
+        <form class="placeholder-form" @submit.prevent="createPlaceholder">
+          <label>姓名<input v-model.trim="placeholderForm.name" maxlength="100" required autofocus /></label>
+          <label>登录标识（可选）<input v-model.trim="placeholderForm.loginIdentifier" maxlength="254" placeholder="邮箱、手机号；留空则使用姓名登录" autocomplete="username" /></label>
+          <div class="placeholder-row">
+            <label>级别年份<input v-model.trim="placeholderForm.cohortYear" type="number" min="1900" max="2200" placeholder="例如 2023" /></label>
+            <label>身份<select v-model="placeholderForm.memberType"><option value="probationary">预备组员</option><option value="formal">正式组员</option></select></label>
+          </div>
+          <p v-if="placeholderError" class="invite-error" role="alert">{{ placeholderError }}</p>
+          <div class="placeholder-dialog-actions">
+            <button class="secondary-command" type="button" @click="closePlaceholderDialog">取消</button>
+            <button class="invite-action" type="submit" :disabled="placeholderLoading || !placeholderForm.name">{{ placeholderLoading ? "正在建立账号" : "建立徒弟账号" }}</button>
+          </div>
+        </form>
+      </section>
     </div>
   </article>
 </template>
@@ -219,6 +248,14 @@ p { margin: 8px 0 0; color: var(--ink-soft); font-size: 13.5px; line-height: 1.8
 .placeholder-item em { color: var(--gold); font-size: 11px; font-style: normal; white-space: nowrap; }
 .placeholder-state { display: grid; justify-items: end; gap: 5px; }
 .placeholder-state button { border: 0; background: transparent; color: var(--aqua); font-size: 11px; cursor: pointer; }
+.placeholder-dialog-backdrop { position: fixed; z-index: 40; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(2, 5, 15, .76); backdrop-filter: blur(10px); }
+.placeholder-dialog { position: relative; width: min(520px, 100%); padding: 28px; border: 1px solid rgba(231, 201, 130, .36); border-radius: 18px; background: linear-gradient(150deg, rgba(20, 36, 68, .97), rgba(7, 12, 27, .98)); box-shadow: 0 24px 80px rgba(0, 0, 0, .5); }
+.placeholder-dialog h2 { margin-top: 12px; }
+.placeholder-dialog > p { margin-top: 8px; }
+.placeholder-dialog-close { position: absolute; top: 12px; right: 14px; width: 32px; height: 32px; border: 1px solid var(--line); border-radius: 50%; background: transparent; color: var(--ink-soft); font-size: 20px; line-height: 1; cursor: pointer; }
+.placeholder-dialog-actions { display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-top: 4px; }
+.placeholder-dialog-actions .invite-action { margin-top: 0; }
+.placeholder-dialog-actions .secondary-command { min-height: 38px; }
 @media (max-width: 700px) { .invite-modes { grid-template-columns: 1fr; } }
 @media (max-width: 560px) { .invite-result { grid-template-columns: 1fr; } .invite-result small { grid-column: auto; } .credential-grid { grid-template-columns: 1fr; } }
 </style>

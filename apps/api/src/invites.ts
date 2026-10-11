@@ -86,7 +86,12 @@ inviteApi.post("/", async (c) => {
   const mentorId = session.user.personId;
   const mentor = await store.personDetail(mentorId);
   if (!mentor) return apiError(404, "MENTOR_NOT_FOUND", "Mentor not found");
-  if (mentor.relationScope !== "lineage") return apiError(409, "MENTOR_NOT_LINEAGE", "Only lineage members can invite students");
+  // The bootstrap super administrator is stored as a cohort guest so it does
+  // not become a lineage node, but it still needs to be able to invite
+  // students and manage the tree. Ordinary members remain lineage-only.
+  if (mentor.relationScope !== "lineage" && session.user.role !== "admin") {
+    return apiError(409, "MENTOR_NOT_LINEAGE", "Only lineage members can invite students");
+  }
   const record = await store.createInvite(mentorId, session.user.id);
   return c.json({ data: publicPersistentInvite(record, mentor) }, 201);
 });

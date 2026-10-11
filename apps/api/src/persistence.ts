@@ -712,11 +712,14 @@ export class D1Persistence {
     cohortYear: number | null;
     memberType: "formal" | "probationary";
     joinedAt: string | null;
-  }, now = Date.now()) {
+  }, now = Date.now(), allowNonLineage = false) {
     const mentor = await this.db.prepare("SELECT id, relation_scope FROM people WHERE id = ?")
       .bind(mentorId).first<{ id: string; relation_scope: string }>();
     if (!mentor) return { state: "mentor-not-found" } as const;
-    if (mentor.relation_scope !== "lineage") return { state: "mentor-not-lineage" } as const;
+    // Administrators may manage the tree even when their own profile is a
+    // cohort guest (the bootstrap account is intentionally kept outside the
+    // lineage). Regular members remain restricted to lineage mentors.
+    if (mentor.relation_scope !== "lineage" && !allowNonLineage) return { state: "mentor-not-lineage" } as const;
     const personId = `placeholder-${crypto.randomUUID().replace(/-/g, "").slice(0, 20)}`;
     const supplied = input.loginIdentifier?.trim() ?? "";
     const isEmail = supplied.includes("@");

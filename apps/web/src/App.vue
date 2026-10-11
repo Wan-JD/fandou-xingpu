@@ -989,7 +989,7 @@ onUnmounted(() => {
             <div v-else-if="!detailAchievements.length && !profileFileAttachments.length" class="empty-detail"><span>✦</span><p>这颗星暂时没有公开记录。</p></div>
             <p v-if="attachmentError" class="form-error" role="alert">{{ attachmentError }}</p>
           </article>
-          <InvitePanel v-if="isOwnDetail && sessionToken" :mentor-id="detail.id" :mentor-name="detail.name" :session-token="sessionToken" />
+          <InvitePanel v-if="isOwnDetail && sessionToken" :mentor-id="detail.id" :mentor-name="detail.name" :mentor-cohort-year="detail.cohort?.year" :session-token="sessionToken" />
           </template>
         </section>
       </div>
