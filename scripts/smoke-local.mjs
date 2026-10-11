@@ -237,6 +237,17 @@ assert.equal((await request(`/api/invites/${encodeURIComponent(revocable.payload
 const accountId = accountCreated.payload.data.id;
 assert.equal((await request(`/api/admin/accounts/${accountId}/status`, { token: admin.token, method: "PATCH", body: { status: "disabled" } })).response.status, 200);
 assert.equal((await request("/api/session", { token: memberSession.token })).response.status, 401);
+assert.equal((await request(`/api/admin/accounts/${accountId}`, { token: admin.token, method: "DELETE" })).response.status, 409, "accounts with students must be blocked from destructive deletion");
+
+const deletablePersonId = await createPerson(`Smoke deletion target ${runId}`);
+const deletableAccount = await request("/api/admin/accounts", { token: admin.token, method: "POST", body: {
+  personId: deletablePersonId, email: `delete-${runId}@example.com`, password: "delete-password-2026", role: "member",
+} });
+assert.equal(deletableAccount.response.status, 201, JSON.stringify(deletableAccount.payload));
+const deletedAccount = await request(`/api/admin/accounts/${deletableAccount.payload.data.id}`, { token: admin.token, method: "DELETE" });
+assert.equal(deletedAccount.response.status, 200, JSON.stringify(deletedAccount.payload));
+assert.equal(deletedAccount.payload.data.personDeleted, true);
+assert.equal((await request(`/api/people/${deletablePersonId}`)).response.status, 404);
 assert.equal((await request(`/api/admin/accounts/${admin.user.id}/status`, { token: admin.token, method: "PATCH", body: { status: "disabled" } })).response.status, 409);
 assert.equal((await request(`/api/admin/accounts/${admin.user.id}/role`, { token: admin.token, method: "PATCH", body: { role: "member" } })).response.status, 409);
 

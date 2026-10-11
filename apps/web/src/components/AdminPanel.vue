@@ -134,8 +134,8 @@ async function setAccountStatus(member: Member) {
 
 async function deleteAccount(member: Member) {
   if (!member.account_id) return;
-  if (!window.confirm(`删除 ${member.name} 的登录账号？人物节点会保留，之后仍可重新绑定账号。`)) return;
-  await mutate(`delete-account-${member.account_id}`, () => api(`/accounts/${encodeURIComponent(member.account_id!)}`, { method: "DELETE" }), "账号已删除");
+  if (!window.confirm(`彻底删除 ${member.name} 的账号和人物档案？头像、简历、成就、邀请及其他资料都会删除，且无法恢复。`)) return;
+  await mutate(`delete-account-${member.account_id}`, () => api(`/accounts/${encodeURIComponent(member.account_id!)}`, { method: "DELETE" }), "账号和人物档案已删除", true);
 }
 
 async function setAccountRole(member: Member, role: "member" | "admin") {

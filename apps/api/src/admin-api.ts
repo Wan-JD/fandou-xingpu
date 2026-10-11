@@ -344,8 +344,8 @@ adminApi.patch("/accounts/:id/status", async (c) => {
   return c.json({ data: { id, status } });
 });
 
-// Deleting an account deliberately leaves its person node in the tree. This
-// removes credentials and sessions so a new account can be bound later.
+// Account deletion removes the account and its person record together. A node
+// with direct students is blocked so the lineage is never silently orphaned.
 adminApi.delete("/accounts/:id", async (c) => {
   const id = c.req.param("id");
   const account = await c.env.DB!.prepare("SELECT id, role, status, person_id FROM users WHERE id = ?")
@@ -358,11 +358,26 @@ adminApi.delete("/accounts/:id", async (c) => {
       .bind(id).first<{ count: number }>();
     if (Number(remaining?.count ?? 0) === 0) return error(409, "LAST_ADMIN", "不能删除最后一位管理员");
   }
+  if (account.person_id) {
+    const students = await c.env.DB!.prepare("SELECT COUNT(*) AS count FROM people WHERE mentor_id = ?")
+      .bind(account.person_id).first<{ count: number }>();
+    if (Number(students?.count ?? 0) > 0) return error(409, "PERSON_HAS_STUDENTS", "该人物仍有徒弟，请先处理师徒关系后再删除");
+  }
+  const personId = account.person_id;
+  const attachmentRows = personId
+    ? await c.env.DB!.prepare("SELECT object_key FROM attachments WHERE person_id = ? AND status <> 'deleted'").bind(personId).all<{ object_key: string }>()
+    : { results: [] as { object_key: string }[] };
   await c.env.DB!.batch([
+    c.env.DB!.prepare("DELETE FROM invitations WHERE created_by_user_id = ? OR mentor_id = ? OR accepted_person_id = ?")
+      .bind(id, personId, personId),
     c.env.DB!.prepare("DELETE FROM users WHERE id = ?").bind(id),
-    audit(c.env.DB!, actor.id, "account.delete", "user", id, { personId: account.person_id }),
+    ...(personId ? [c.env.DB!.prepare("DELETE FROM people WHERE id = ?").bind(personId)] : []),
+    audit(c.env.DB!, actor.id, "account.delete", "user", id, { personId, personDeleted: Boolean(personId) }),
   ]);
-  return c.body(null, 204);
+  if (c.env.FILES && attachmentRows.results.length) {
+    await c.env.FILES.delete(attachmentRows.results.map((row) => row.object_key));
+  }
+  return c.json({ data: { id, personId, personDeleted: Boolean(personId) } });
 });
 
 adminApi.patch("/accounts/:id/role", async (c) => {
