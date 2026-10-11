@@ -3,7 +3,10 @@ export type Id = string;
 export type RelationScope = "lineage" | "cohort_guest";
 export type PersonStatus = "active" | "archived";
 export type MemberType = "formal" | "probationary";
-export type Destination = "big_tech" | "postgraduate_985" | "postgraduate_211" | "startup" | "further_study" | "other";
+export type Destination = "big_tech" | "postgraduate_985" | "postgraduate_211" | "other";
+export type GroupRole = "leader" | "vice_leader";
+export type CoverTheme = "nebula" | "aurora" | "dawn" | "abyss";
+export type PostVisibility = "public" | "members";
 export type DatePrecision = "year" | "month" | "day";
 export type AchievementKind = "achievement" | "honor";
 export type AttachmentCategory = "avatar" | "resume" | "photo" | "certificate" | "other";
@@ -27,6 +30,7 @@ export interface PersonSummary {
   status: PersonStatus;
   memberType: MemberType;
   destination: Destination | null;
+  groupRole: GroupRole | null;
 }
 
 export interface PersonNode extends PersonSummary {
@@ -88,8 +92,34 @@ export interface AttachmentSummary {
   url: string | null;
 }
 
+export interface PostImage {
+  id: Id;
+  url: string;
+}
+
+export interface Post {
+  id: Id;
+  personId: Id;
+  title: string | null;
+  content: string;
+  visibility: PostVisibility;
+  isPinned: boolean;
+  images: PostImage[];
+  likeCount: number;
+  likedByViewer: boolean;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface PersonDetail extends PersonSummary {
   role: string;
+  motto: string | null;
+  coverTheme: CoverTheme | null;
+  lineagePath: PersonSummary[];
+  descendantCount: number;
+  cohortPeers: PersonSummary[];
+  postCount: number;
   generation: string;
   joinedAt: string;
   tags: string[];
@@ -146,6 +176,9 @@ export interface TreeQuery {
 export interface PersonUpdateInput {
   bio?: string;
   destination?: Destination | null;
+  groupRole?: GroupRole | null;
+  motto?: string | null;
+  coverTheme?: CoverTheme | null;
   contactEmail?: string | null;
   education?: string | null;
   experience?: string | null;

@@ -78,7 +78,7 @@ contentApi.delete("/attachments/:id", async (c) => {
   if (!current) return error(401, "UNAUTHENTICATED", "请先登录");
   if (!c.env.FILES) return error(503, "R2_REQUIRED", "附件存储尚未配置");
   const item = await persistence(c.env.DB!).attachment(c.req.param("id"));
-  if (!item || item.personId !== current.user.personId) return error(404, "ATTACHMENT_NOT_FOUND", "附件不存在");
+  if (!item || item.personId !== current.user.personId || item.postId) return error(404, "ATTACHMENT_NOT_FOUND", "附件不存在");
   await persistence(c.env.DB!).removeAttachment(current.user.personId, item.id, c.env.FILES);
   return c.body(null, 204);
 });
@@ -88,8 +88,11 @@ attachmentApi.get("/:id", async (c) => {
   if (!c.env?.DB || !c.env.FILES) return error(503, "STORAGE_REQUIRED", "附件存储尚未配置");
   const item = await persistence(c.env.DB).attachment(c.req.param("id"));
   if (!item || item.status !== "ready") return error(404, "ATTACHMENT_NOT_FOUND", "附件不存在");
-  const current = await persistence(c.env.DB).session(c.req.header("Authorization"));
-  if (item.category !== "avatar" && (!current || (item.visibility === "private" && current.user.personId !== item.personId && current.user.role !== "admin"))) {
+  // 动态配图跟随所属动态的可见范围；动态被删除后图片不再可读。
+  if (item.postId && !item.postVisibility) return error(404, "ATTACHMENT_NOT_FOUND", "附件不存在");
+  const isPublic = item.category === "avatar" || item.postVisibility === "public";
+  const current = isPublic ? null : await persistence(c.env.DB).session(c.req.header("Authorization"));
+  if (!isPublic && (!current || (!item.postId && item.visibility === "private" && current.user.personId !== item.personId && current.user.role !== "admin"))) {
     return error(401, "UNAUTHENTICATED", "请先登录");
   }
   const object = await c.env.FILES.get(item.objectKey);
@@ -97,8 +100,8 @@ attachmentApi.get("/:id", async (c) => {
   const headers = new Headers();
   object.writeHttpMetadata(headers);
   // 头像是界面个性化资源，不作为可下载附件暴露文件名；其它资料才提供用户友好的附件名。
-  if (item.category !== "avatar") headers.set("Content-Disposition", `inline; filename*=UTF-8''${encodeURIComponent(item.originalName)}`);
-  headers.set("Cache-Control", item.category === "avatar" ? "public, max-age=300" : "private, no-store");
+  if (item.category !== "avatar" && !item.postId) headers.set("Content-Disposition", `inline; filename*=UTF-8''${encodeURIComponent(item.originalName)}`);
+  headers.set("Cache-Control", isPublic ? "public, max-age=300" : item.postId ? "private, max-age=300" : "private, no-store");
   return new Response(object.body, { headers });
 });
 

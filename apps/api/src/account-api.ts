@@ -137,8 +137,10 @@ accountApi.patch("/me/placeholder-students/:personId", async (c) => {
   const hasCohortYear = Object.prototype.hasOwnProperty.call(body ?? {}, "cohortYear");
   const cohortYear = !hasCohortYear || body?.cohortYear === null || body?.cohortYear === "" ? null : Number(body?.cohortYear);
   const memberType = body?.memberType === undefined ? undefined : body.memberType === "formal" || body.memberType === "probationary" ? body.memberType : null;
+  const hasGroupRole = Object.prototype.hasOwnProperty.call(body ?? {}, "groupRole");
+  const groupRole = !hasGroupRole || body?.groupRole === null || body?.groupRole === "" ? null : body?.groupRole === "leader" || body?.groupRole === "vice_leader" ? body.groupRole : undefined;
   const status = body?.status === undefined ? undefined : body.status === "active" || body.status === "archived" ? body.status : null;
-  if (!Number.isInteger(version) || version < 1 || (name !== undefined && (!name || name.length > 100)) || (cohortYear !== null && (!Number.isInteger(cohortYear) || cohortYear < 1900 || cohortYear > 2200)) || memberType === null || status === null) {
+  if (!Number.isInteger(version) || version < 1 || (name !== undefined && (!name || name.length > 100)) || (cohortYear !== null && (!Number.isInteger(cohortYear) || cohortYear < 1900 || cohortYear > 2200)) || memberType === null || groupRole === undefined || status === null) {
     return errorResponse("请检查徒弟资料", "VALIDATION_ERROR", 400);
   }
   const updated = await store.updateMentoredStudent(session.user.personId, personId, {
@@ -146,6 +148,7 @@ accountApi.patch("/me/placeholder-students/:personId", async (c) => {
     name,
     ...(hasCohortYear ? { cohortYear } : {}),
     ...(memberType !== undefined ? { memberType } : {}),
+    ...(hasGroupRole ? { groupRole: groupRole as "leader" | "vice_leader" | null } : {}),
     ...(status !== undefined ? { status } : {}),
   });
   if (!updated) return errorResponse("徒弟不存在、不是你的徒弟，或资料已更新", "VERSION_CONFLICT", 409);
@@ -161,4 +164,32 @@ accountApi.post("/me/placeholder-students/:personId/claim", async (c) => {
   if (result.state === "not-found") return errorResponse("待认领节点不存在", "PLACEHOLDER_NOT_FOUND", 404);
   if (result.state === "claimed") return errorResponse("节点已经认领，不能重新生成链接", "CLAIM_ALREADY_USED", 409);
   return c.json({ data: { claimToken: result.token, claimPath: `/claim?token=${encodeURIComponent(result.token)}`, expiresAt: result.expiresAt } });
+});
+
+accountApi.get("/me/students", async (c) => {
+  if (!c.env?.DB) return errorResponse("认证数据库未配置", "DATABASE_UNAVAILABLE", 503);
+  const store = persistence(c.env.DB);
+  const session = await store.session(c.req.header("Authorization"));
+  if (!session) return errorResponse("请先登录", "UNAUTHENTICATED", 401);
+  const [students, invites] = await Promise.all([store.listStudents(session.user.personId), store.listMentorInvites(session.user.personId)]);
+  return c.json({ data: { students, invites }, meta: { total: students.length } });
+});
+
+accountApi.post("/me/students/:personId/reset-password", async (c) => {
+  if (!c.env?.DB) return errorResponse("认证数据库未配置", "DATABASE_UNAVAILABLE", 503);
+  const store = persistence(c.env.DB);
+  const session = await store.session(c.req.header("Authorization"));
+  if (!session) return errorResponse("请先登录", "UNAUTHENTICATED", 401);
+  const result = await store.resetStudentInitialPassword(session.user.personId, c.req.param("personId"));
+  if (result.state !== "reset") return errorResponse("只能为尚未激活的直系徒弟账号重新生成初始密码", "RESET_NOT_ALLOWED", 409);
+  return c.json({ data: result.account });
+});
+
+accountApi.delete("/me/invites/:id", async (c) => {
+  if (!c.env?.DB) return errorResponse("认证数据库未配置", "DATABASE_UNAVAILABLE", 503);
+  const store = persistence(c.env.DB);
+  const session = await store.session(c.req.header("Authorization"));
+  if (!session) return errorResponse("请先登录", "UNAUTHENTICATED", 401);
+  if (!await store.revokeMentorInvite(session.user.personId, c.req.param("id"), session.user.id)) return errorResponse("邀请不存在、已使用或已撤销", "INVITE_NOT_PENDING", 409);
+  return c.body(null, 204);
 });

@@ -4,7 +4,10 @@ export const idSchema = z.string().trim().min(1).max(128);
 export const relationScopeSchema = z.enum(["lineage", "cohort_guest"]);
 export const personStatusSchema = z.enum(["active", "archived"]);
 export const memberTypeSchema = z.enum(["formal", "probationary"]);
-export const destinationSchema = z.enum(["big_tech", "postgraduate_985", "postgraduate_211", "startup", "further_study", "other"]);
+export const destinationSchema = z.enum(["big_tech", "postgraduate_985", "postgraduate_211", "other"]);
+export const groupRoleSchema = z.enum(["leader", "vice_leader"]);
+export const coverThemeSchema = z.enum(["nebula", "aurora", "dawn", "abyss"]);
+export const postVisibilitySchema = z.enum(["public", "members"]);
 export const datePrecisionSchema = z.enum(["year", "month", "day"]);
 export const achievementKindSchema = z.enum(["achievement", "honor"]);
 export const profileLinkSchema = z.object({ label: z.string().trim().min(1).max(80), url: z.string().trim().url().max(500).refine((value) => /^https?:\/\//i.test(value), "链接必须使用 HTTP 或 HTTPS 协议") }).strict();
@@ -24,6 +27,9 @@ export const personUpdateSchema = z.object({
   bio: z.string().trim().max(10_000).optional(),
   destination: destinationSchema.nullable().optional(),
   memberType: memberTypeSchema.nullable().optional(),
+  groupRole: groupRoleSchema.nullable().optional(),
+  motto: z.string().trim().max(120).nullable().optional(),
+  coverTheme: coverThemeSchema.nullable().optional(),
   contactEmail: z.string().trim().email().max(254).nullable().optional(),
   education: z.string().trim().max(10_000).nullable().optional(),
   experience: z.string().trim().max(20_000).nullable().optional(),
@@ -60,6 +66,22 @@ export const achievementInputSchema = z.object({
   }
 });
 
+export const postInputSchema = z.object({
+  title: z.string().trim().max(120).nullable().optional(),
+  content: z.string().trim().min(1).max(10_000),
+  visibility: postVisibilitySchema.optional().default("public"),
+}).strict();
+
+export const postUpdateSchema = z.object({
+  title: z.string().trim().max(120).nullable().optional(),
+  content: z.string().trim().min(1).max(10_000).optional(),
+  visibility: postVisibilitySchema.optional(),
+  isPinned: z.boolean().optional(),
+  version: z.number().int().min(1),
+}).strict();
+
+export const POST_IMAGE_LIMIT = 6;
+
 export const idParamsSchema = z.object({ id: idSchema });
 
 export type TreeQueryInput = z.infer<typeof treeQuerySchema>;
@@ -68,3 +90,5 @@ export type PersonUpdateInput = z.infer<typeof personUpdateSchema>;
 export type SessionLoginInput = z.infer<typeof sessionLoginSchema>;
 export type SessionRegisterInput = z.infer<typeof sessionRegisterSchema>;
 export type AchievementInput = z.infer<typeof achievementInputSchema>;
+export type PostInput = z.infer<typeof postInputSchema>;
+export type PostUpdateInput = z.infer<typeof postUpdateSchema>;

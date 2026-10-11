@@ -7,6 +7,7 @@ import contentApi, { attachmentApi } from "./content-api.ts";
 import { adminApi } from "./admin-api.ts";
 import { inviteApi } from "./invites.ts";
 import { claimApi } from "./claims.ts";
+import { listPersonPosts, myPostsApi, postReactionsApi } from "./posts.ts";
 import { persistence } from "./persistence.ts";
 import type { Env } from "./types";
 
@@ -50,6 +51,8 @@ app.route("/api/invites", inviteApi);
 app.route("/api/claims", claimApi);
 app.route("/api/admin", adminApi);
 app.route("/api", accountApi);
+app.route("/api/me/posts", myPostsApi);
+app.route("/api/posts", postReactionsApi);
 app.route("/api/me", contentApi);
 app.route("/api/attachments", attachmentApi);
 
@@ -70,6 +73,8 @@ app.get("/api/people/search", async (c) => {
   const result = await persistence(c.env.DB).searchPeople(parsed.data.q, parsed.data.limit);
   return c.json({ data: result, meta: { total: result.total, limit: parsed.data.limit, query: parsed.data.q } });
 });
+
+app.get("/api/people/:id/posts", listPersonPosts);
 
 app.get("/api/people/:id", async (c) => {
   if (!c.env?.DB) return errorResponse("内容数据库未配置", "DATABASE_UNAVAILABLE", 503);

@@ -16,6 +16,7 @@ type MemberRow = {
   status: "active" | "archived";
   member_type: "formal" | "probationary";
   destination: string | null;
+  group_role: string | null;
   mentor_id: string | null;
   mentor_name: string | null;
   relation_scope: "lineage" | "cohort_guest";
@@ -39,7 +40,8 @@ type AccountRow = {
   person_id: string | null;
 };
 
-const destinations = new Set(["big_tech", "postgraduate_985", "postgraduate_211", "startup", "further_study", "other"]);
+const destinations = new Set(["big_tech", "postgraduate_985", "postgraduate_211", "other"]);
+const groupRoles = new Set(["leader", "vice_leader"]);
 const personStatuses = new Set(["active", "archived"]);
 
 const error = (status: 400 | 401 | 403 | 404 | 409 | 503, code: string, message: string) =>
@@ -161,7 +163,7 @@ adminApi.get("/members", async (c) => {
     SELECT p.id, p.name, p.bio, p.role, p.is_featured, p.featured_note, p.tags_json,
       p.cohort_id, COALESCE(p.cohort_year, c.year) AS cohort_year,
       CASE WHEN COALESCE(p.cohort_year, c.year) IS NULL THEN NULL ELSE CAST(COALESCE(p.cohort_year, c.year) AS TEXT) || '级' END AS cohort_label,
-      p.status, p.member_type, p.destination,
+      p.status, p.member_type, p.destination, p.group_role,
       p.mentor_id, mentor.name AS mentor_name, p.relation_scope, p.version,
       u.id AS account_id, u.email, u.phone, u.role AS account_role, u.status AS account_status
     FROM people p
@@ -183,13 +185,15 @@ adminApi.post("/members", async (c) => {
   const memberType = body?.memberType === "probationary" ? "probationary" : "formal";
   const destination = body?.destination === null || body?.destination === "" ? null
     : typeof body?.destination === "string" && destinations.has(body.destination) ? body.destination : undefined;
+  const groupRole = body?.groupRole === undefined || body?.groupRole === null || body?.groupRole === "" ? null
+    : typeof body.groupRole === "string" && groupRoles.has(body.groupRole) ? body.groupRole : undefined;
   // All current people belong to the same lineage. Keep accepting the legacy
   // field from older clients, but never create a new cohort_guest record.
   const relationScope = "lineage" as const;
   const cohortYear = rawCohortYear === null && legacyCohortId
     ? (await c.env.DB!.prepare("SELECT year FROM cohorts WHERE id = ?").bind(legacyCohortId).first<{ year: number | null }>())?.year ?? null
     : rawCohortYear;
-  if (!name || destination === undefined || (cohortYear !== null && (!Number.isInteger(cohortYear) || cohortYear < 1900 || cohortYear > 2200))) return error(400, "VALIDATION_ERROR", "请检查姓名、级别年份和去向");
+  if (!name || destination === undefined || groupRole === undefined || (cohortYear !== null && (!Number.isInteger(cohortYear) || cohortYear < 1900 || cohortYear > 2200))) return error(400, "VALIDATION_ERROR", "请检查姓名、级别年份和去向");
   const id = `person-${crypto.randomUUID()}`;
   const relationError = await mentorProblem(c.env.DB!, id, mentorId, relationScope as "lineage" | "cohort_guest");
   if (relationError) return mentorError(relationError);
@@ -199,10 +203,10 @@ adminApi.post("/members", async (c) => {
       c.env.DB!.prepare(`
         INSERT INTO people (
           id, name, nickname, mentor_id, cohort_id, cohort_year, relation_scope, bio,
-          is_featured, status, member_type, destination, role, joined_at, tags_json
-        ) VALUES (?, ?, NULL, ?, NULL, ?, ?, '', 0, ?, ?, ?, '星谱成员', date('now'), '[]')
-      `).bind(id, name, mentorId, cohortYear, relationScope, status, memberType, destination),
-      audit(c.env.DB!, actor.id, "member.create", "person", id, { name, cohortYear, mentorId, status, memberType, destination, relationScope }),
+          is_featured, status, member_type, destination, group_role, role, joined_at, tags_json
+        ) VALUES (?, ?, NULL, ?, NULL, ?, ?, '', 0, ?, ?, ?, ?, '星谱成员', date('now'), '[]')
+      `).bind(id, name, mentorId, cohortYear, relationScope, status, memberType, destination, groupRole),
+      audit(c.env.DB!, actor.id, "member.create", "person", id, { name, cohortYear, mentorId, status, memberType, destination, groupRole, relationScope }),
     ]);
   } catch (cause) {
     const code = String(cause).match(/MENTOR_(SELF|NOT_FOUND|NOT_LINEAGE|CYCLE)|SCOPE_MENTOR_CONFLICT|HAS_LINEAGE_STUDENTS/)?.[0];
@@ -276,6 +280,12 @@ adminApi.patch("/members/:id", async (c) => {
       : typeof body.destination === "string" && destinations.has(body.destination) ? body.destination : undefined;
     if (destination === undefined) return error(400, "VALIDATION_ERROR", "去向无效");
     assignments.push("destination = ?"); values.push(destination); details.destination = destination;
+  }
+  if ("groupRole" in body) {
+    const groupRole = body.groupRole === null || body.groupRole === "" ? null
+      : typeof body.groupRole === "string" && groupRoles.has(body.groupRole) ? body.groupRole : undefined;
+    if (groupRole === undefined) return error(400, "VALIDATION_ERROR", "组内职务无效");
+    assignments.push("group_role = ?"); values.push(groupRole); details.groupRole = groupRole;
   }
   if ("relationScope" in body && body.relationScope !== "lineage" && body.relationScope !== "cohort_guest") return error(400, "VALIDATION_ERROR", "成员归属已统一为谱系");
   if ("mentorId" in body) {
@@ -521,8 +531,8 @@ adminApi.post("/accounts", async (c) => {
   const actor = c.get("adminUser");
   await c.env.DB!.batch([
     c.env.DB!.prepare(`
-      INSERT INTO users (id, person_id, role, status, email, phone, display_name, password_salt, password_hash, must_change_password)
-      VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, 0)
+      INSERT INTO users (id, person_id, role, status, email, phone, display_name, password_salt, password_hash, must_change_password, activated_at)
+      VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, 0, datetime('now'))
     `).bind(id, personId, role, email, phone, person.name, credentials.passwordSalt, credentials.passwordHash),
     audit(c.env.DB!, actor.id, "account.create", "user", id, { personId, email, phone, role }),
   ]);

@@ -5,6 +5,9 @@ export interface Env {
   FILES?: R2Bucket;
 }
 
+export type Destination = "big_tech" | "postgraduate_985" | "postgraduate_211" | "other";
+export type GroupRole = "leader" | "vice_leader";
+
 export interface Person {
   id: string;
   name: string;
@@ -16,12 +19,15 @@ export interface Person {
   joinedAt: string;
   status: "active" | "archived";
   memberType: "formal" | "probationary";
-  destination: "big_tech" | "postgraduate_985" | "postgraduate_211" | "startup" | "further_study" | "other" | null;
+  destination: Destination | null;
+  groupRole: GroupRole | null;
   tags: string[];
   relationScope: "lineage" | "cohort_guest";
   isFeatured: boolean;
   mentorId: string | null;
   bio: string;
+  motto?: string | null;
+  coverTheme?: string | null;
   contactEmail?: string | null;
   education?: string | null;
   experience?: string | null;
@@ -48,7 +54,8 @@ export interface TreeNode {
   isFeatured: boolean;
   status: "active" | "archived";
   memberType: "formal" | "probationary";
-  destination: "big_tech" | "postgraduate_985" | "postgraduate_211" | "startup" | "further_study" | "other" | null;
+  destination: Destination | null;
+  groupRole: GroupRole | null;
   mentorId: string | null;
   depth: number | null;
   directStudentIds: string[];

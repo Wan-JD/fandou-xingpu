@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 const { fixturePeople, fixtureCohorts, fixtureTree } = await import("./lineage-fixtures.ts");
-const { destinationSchema } = await import("../packages/shared/src/schemas.ts");
+const { destinationSchema, groupRoleSchema, postInputSchema, postUpdateSchema, personUpdateSchema } = await import("../packages/shared/src/schemas.ts");
 
 const yearFromLabel = (label) => Number(String(label).match(/\d{4}/)?.[0] ?? NaN);
 const personStatuses = new Set(["active", "archived"]);
@@ -10,8 +10,6 @@ const destinationKinds = new Set([
   "big_tech",
   "postgraduate_985",
   "postgraduate_211",
-  "startup",
-  "further_study",
   "other",
 ]);
 
@@ -117,3 +115,26 @@ test("测试树中每位学生的深度比师傅大一层", () => {
   }
 });
 
+
+test("去向已收敛，创业与继续深造不再被接受", () => {
+  for (const retired of ["startup", "further_study"]) assert.equal(destinationSchema.safeParse(retired).success, false, `${retired} should be retired`);
+});
+
+test("组长与副组长是独立的组内职务", () => {
+  assert.equal(groupRoleSchema.safeParse("leader").success, true);
+  assert.equal(groupRoleSchema.safeParse("vice_leader").success, true);
+  assert.equal(groupRoleSchema.safeParse("big_tech").success, false);
+  assert.equal(personUpdateSchema.safeParse({ version: 1, groupRole: null, motto: "向光而行", coverTheme: "aurora" }).success, true);
+  assert.equal(personUpdateSchema.safeParse({ version: 1, coverTheme: "unknown" }).success, false);
+  assert.equal(personUpdateSchema.safeParse({ version: 1, motto: "x".repeat(121) }).success, false);
+});
+
+test("动态正文必填并限制可见范围", () => {
+  assert.equal(postInputSchema.safeParse({ content: "  " }).success, false);
+  const parsed = postInputSchema.parse({ content: "今天的星光" });
+  assert.equal(parsed.visibility, "public");
+  assert.equal(postInputSchema.safeParse({ content: "x", visibility: "private" }).success, false);
+  assert.equal(postInputSchema.safeParse({ content: "x".repeat(10_001) }).success, false);
+  assert.equal(postUpdateSchema.safeParse({ isPinned: true }).success, false, "updates require a version");
+  assert.equal(postUpdateSchema.safeParse({ isPinned: true, version: 2 }).success, true);
+});

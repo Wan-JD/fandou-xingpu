@@ -227,6 +227,104 @@ const afterAttachmentDelete = await request(`/api/people/${childId}`, { token: m
 assert.equal(afterAttachmentDelete.payload.data.avatarUrl, null);
 assert.equal(afterAttachmentDelete.payload.data.resume, null);
 
+// ---- Personal blog: group role, motto, posts and likes ----
+assert.equal((await request("/api/me/profile", { token: memberSession.token, method: "PATCH", body: { version: clearedProfile.payload.data.version, destination: "startup" } })).response.status, 400, "retired destinations are rejected");
+const blogProfile = await request("/api/me/profile", { token: memberSession.token, method: "PATCH", body: {
+  version: clearedProfile.payload.data.version, groupRole: "vice_leader", motto: "向光而行", coverTheme: "aurora",
+} });
+assert.equal(blogProfile.response.status, 200, JSON.stringify(blogProfile.payload));
+assert.equal(blogProfile.payload.data.groupRole, "vice_leader");
+assert.equal(blogProfile.payload.data.motto, "向光而行");
+assert.equal(blogProfile.payload.data.coverTheme, "aurora");
+assert.equal((await request("/api/tree")).payload.data.nodes.find((item) => item.id === childId).groupRole, "vice_leader");
+assert.ok(Array.isArray(blogProfile.payload.data.lineagePath) && blogProfile.payload.data.lineagePath.some((item) => item.id === parentId));
+assert.ok(blogProfile.payload.data.descendantCount >= 1);
+
+const achievement = await request("/api/me/achievements", { token: memberSession.token, method: "POST", body: { kind: "honor", title: `荣誉 ${runId}`, content: "星光奖", occurredOn: "2026-05" } });
+assert.equal(achievement.response.status, 201, JSON.stringify(achievement.payload));
+assert.ok((await request(`/api/people/${childId}`, { token: admin.token })).payload.data.achievements.some((item) => item.id === achievement.payload.data.id), "members can read achievements");
+assert.equal((await request(`/api/people/${childId}`)).payload.data.achievements.length, 0, "anonymous visitors do not read achievements");
+
+const publicPostForm = new FormData();
+publicPostForm.append("title", "第一条动态");
+publicPostForm.append("content", `公开动态 ${runId}`);
+publicPostForm.append("visibility", "public");
+publicPostForm.append("images", new Blob(["post-image"], { type: "image/png" }), "post.png");
+const publicPost = await requestMultipart("/api/me/posts", { token: memberSession.token, method: "POST", form: publicPostForm });
+assert.equal(publicPost.response.status, 201, JSON.stringify(publicPost.payload));
+assert.equal(publicPost.payload.data.images.length, 1);
+const publicImageId = publicPost.payload.data.images[0].id;
+const membersPostForm = new FormData();
+membersPostForm.append("content", `成员动态 ${runId}`);
+membersPostForm.append("visibility", "members");
+membersPostForm.append("images", new Blob(["members-image"], { type: "image/webp" }), "members.webp");
+const membersPost = await requestMultipart("/api/me/posts", { token: memberSession.token, method: "POST", form: membersPostForm });
+assert.equal(membersPost.response.status, 201, JSON.stringify(membersPost.payload));
+const membersImageId = membersPost.payload.data.images[0].id;
+const badPostForm = new FormData();
+badPostForm.append("content", "bad image");
+badPostForm.append("images", new Blob(["pdf"], { type: "application/pdf" }), "x.pdf");
+assert.equal((await requestMultipart("/api/me/posts", { token: memberSession.token, method: "POST", form: badPostForm })).response.status, 415);
+assert.equal((await requestMultipart("/api/me/posts", { method: "POST", form: publicPostForm })).response.status, 401);
+
+const anonymousPosts = await request(`/api/people/${childId}/posts`);
+assert.deepEqual(anonymousPosts.payload.data.map((item) => item.id), [publicPost.payload.data.id], "anonymous visitors only see public posts");
+const memberPosts = await request(`/api/people/${childId}/posts`, { token: admin.token });
+assert.equal(memberPosts.payload.data.length, 2);
+assert.equal((await request(`/api/people/${childId}`)).payload.data.postCount, 1);
+assert.equal((await request(`/api/attachments/${publicImageId}`)).response.status, 200, "public post images are public");
+assert.equal((await request(`/api/attachments/${membersImageId}`)).response.status, 401, "members post images need a session");
+assert.equal((await request(`/api/attachments/${membersImageId}`, { token: admin.token })).response.status, 200);
+assert.equal((await request(`/api/people/${childId}`, { token: memberSession.token })).payload.data.attachments.some((item) => item.id === publicImageId), false, "post images stay out of the file list");
+assert.equal((await request(`/api/me/attachments/${publicImageId}`, { token: memberSession.token, method: "DELETE" })).response.status, 404, "post images are managed through their post");
+
+const liked = await request(`/api/posts/${publicPost.payload.data.id}/like`, { token: admin.token, method: "PUT" });
+assert.equal(liked.response.status, 200, JSON.stringify(liked.payload));
+assert.equal(liked.payload.data.likeCount, 1);
+assert.equal((await request(`/api/posts/${publicPost.payload.data.id}/like`, { token: admin.token, method: "PUT" })).payload.data.likeCount, 1, "likes are idempotent");
+assert.equal((await request(`/api/posts/${publicPost.payload.data.id}/like`, { method: "PUT" })).response.status, 401);
+
+const pinned = await request(`/api/me/posts/${membersPost.payload.data.id}`, { token: memberSession.token, method: "PATCH", body: { version: membersPost.payload.data.version, isPinned: true } });
+assert.equal(pinned.response.status, 200, JSON.stringify(pinned.payload));
+assert.equal((await request(`/api/people/${childId}/posts`, { token: memberSession.token })).payload.data[0].id, membersPost.payload.data.id, "pinned posts lead the feed");
+assert.equal((await request(`/api/me/posts/${membersPost.payload.data.id}`, { token: memberSession.token, method: "PATCH", body: { version: membersPost.payload.data.version, content: "stale" } })).response.status, 409);
+assert.equal((await request(`/api/me/posts/${membersPost.payload.data.id}`, { token: admin.token, method: "PATCH", body: { version: pinned.payload.data.version, content: "not mine" } })).response.status, 409, "only the author edits a post");
+const removedImage = await request(`/api/me/posts/${publicPost.payload.data.id}/images/${publicImageId}`, { token: memberSession.token, method: "DELETE" });
+assert.equal(removedImage.response.status, 200, JSON.stringify(removedImage.payload));
+assert.equal(removedImage.payload.data.images.length, 0);
+assert.equal((await request(`/api/attachments/${publicImageId}`)).response.status, 404);
+assert.equal((await request(`/api/me/posts/${membersPost.payload.data.id}`, { token: admin.token, method: "DELETE" })).response.status, 404);
+assert.equal((await request(`/api/me/posts/${membersPost.payload.data.id}`, { token: memberSession.token, method: "DELETE" })).response.status, 204);
+assert.equal((await request(`/api/attachments/${membersImageId}`, { token: admin.token })).response.status, 404, "deleted posts take their images with them");
+
+// ---- Student studio ----
+const studio = await request("/api/me/students", { token: memberSession.token });
+assert.equal(studio.response.status, 200, JSON.stringify(studio.payload));
+const claimedStudent = studio.payload.data.students.find((item) => item.personId === placeholder.payload.data.person.id);
+assert.ok(claimedStudent?.account?.activated, "claimed students are activated");
+assert.equal((await request(`/api/me/students/${claimedStudent.personId}/reset-password`, { token: memberSession.token, method: "POST" })).response.status, 409, "activated accounts cannot be reset by the mentor");
+assert.ok(studio.payload.data.invites.some((item) => item.state === "accepted"));
+const freshEmail = `fresh-${runId}@example.com`;
+const freshStudent = await request("/api/me/placeholder-students", { token: memberSession.token, method: "POST", body: { name: `Fresh ${runId}`, loginIdentifier: freshEmail, memberType: "formal", cohortYear: 2099 } });
+assert.equal(freshStudent.response.status, 201, JSON.stringify(freshStudent.payload));
+const freshRow = (await request("/api/me/students", { token: memberSession.token })).payload.data.students.find((item) => item.personId === freshStudent.payload.data.person.id);
+assert.equal(freshRow.account.canResetPassword, true);
+assert.equal((await request(`/api/me/students/${freshRow.personId}/reset-password`, { token: admin.token, method: "POST" })).response.status, 409, "only the direct mentor can reset");
+const reissued = await request(`/api/me/students/${freshRow.personId}/reset-password`, { token: memberSession.token, method: "POST" });
+assert.equal(reissued.response.status, 200, JSON.stringify(reissued.payload));
+assert.equal((await request("/api/session/login", { method: "POST", body: { identifier: freshEmail, password: freshStudent.payload.data.temporaryPassword } })).response.status, 401, "the previous initial password stops working");
+const freshSession = await login(freshEmail, reissued.payload.data.temporaryPassword);
+assert.equal(freshSession.user.mustChangePassword, true);
+const roleUpdate = await request(`/api/me/placeholder-students/${freshRow.personId}`, { token: memberSession.token, method: "PATCH", body: { version: freshRow.version, groupRole: "leader", status: "archived" } });
+assert.equal(roleUpdate.response.status, 200, JSON.stringify(roleUpdate.payload));
+assert.equal(roleUpdate.payload.data.groupRole, "leader");
+const pendingInvite = await request("/api/invites", { token: memberSession.token, method: "POST", body: {} });
+const pendingInviteId = (await request("/api/me/students", { token: memberSession.token })).payload.data.invites.find((item) => item.state === "pending")?.id;
+assert.ok(pendingInviteId);
+assert.equal((await request(`/api/me/invites/${encodeURIComponent(pendingInviteId)}`, { token: admin.token, method: "DELETE" })).response.status, 409, "mentors only revoke their own invites");
+assert.equal((await request(`/api/me/invites/${encodeURIComponent(pendingInviteId)}`, { token: memberSession.token, method: "DELETE" })).response.status, 204);
+assert.equal((await request(`/api/invites/${encodeURIComponent(pendingInvite.payload.data.token)}`)).response.status, 410);
+
 const revocable = await request("/api/invites", { token: memberSession.token, method: "POST", body: {} });
 const inviteRows = await request("/api/admin/invites", { token: admin.token });
 const inviteHash = inviteRows.payload.data.find((item) => item.mentor_id === childId && !item.accepted_at && !item.revoked_at)?.id;

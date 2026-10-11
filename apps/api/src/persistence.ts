@@ -27,6 +27,9 @@ type PersonRow = {
   status: "active" | "archived";
   member_type: "formal" | "probationary";
   destination: Person["destination"];
+  group_role: Person["groupRole"];
+  motto: string | null;
+  cover_theme: string | null;
   version: number;
   role: string;
   joined_at: string | null;
@@ -119,7 +122,7 @@ export type ContentViewer = { userId?: string; personId?: string; role?: "member
 
 const PERSON_SELECT = `
   SELECT p.id, p.name, p.nickname, p.mentor_id, p.relation_scope, p.bio,
-    p.is_featured, p.status, p.member_type, p.destination, p.version, p.role, p.joined_at,
+    p.is_featured, p.status, p.member_type, p.destination, p.group_role, p.motto, p.cover_theme, p.version, p.role, p.joined_at,
     p.tags_json, p.created_at, p.updated_at,
     p.contact_email, p.education, p.experience, p.skills_json, p.links_json,
     p.cohort_year AS cohort_year_direct,
@@ -133,9 +136,12 @@ const destinationLabels: Record<NonNullable<Person["destination"]>, string> = {
   big_tech: "大厂",
   postgraduate_985: "985研",
   postgraduate_211: "211研",
-  startup: "创业",
-  further_study: "继续深造",
   other: "其他",
+};
+
+const groupRoleLabels: Record<NonNullable<Person["groupRole"]>, string> = {
+  leader: "组长",
+  vice_leader: "副组长",
 };
 
 function parseTags(value: string) {
@@ -218,11 +224,14 @@ function mapPerson(row: PersonRow): StoredPerson {
       status: row.status,
       memberType: row.member_type,
       destination: row.destination,
+      groupRole: row.group_role ?? null,
       tags: parseTags(row.tags_json),
       relationScope: row.relation_scope,
       isFeatured: Boolean(row.is_featured),
       mentorId: row.mentor_id,
       bio: row.bio,
+      motto: row.motto,
+      coverTheme: row.cover_theme,
       contactEmail: row.contact_email,
       education: row.education,
       experience: row.experience,
@@ -252,6 +261,7 @@ function toSummary(record: StoredPerson) {
     status: person.status,
     memberType: person.memberType,
     destination: person.destination,
+    groupRole: person.groupRole,
   };
 }
 
@@ -292,6 +302,7 @@ export class D1Persistence {
       joinedAt: record.person.joinedAt,
       tags: record.person.tags,
       bio: record.person.bio,
+      motto: record.person.motto ?? null,
       education: record.person.education,
       experience: record.person.experience,
       skills: record.person.skills,
@@ -314,6 +325,33 @@ export class D1Persistence {
     if (!record) return null;
     const mentor = record.person.mentorId ? byId.get(record.person.mentorId) : null;
     const students = records.filter(({ person }) => person.mentorId === id);
+    // Root-first ancestor chain; the visited set guards against legacy cycles.
+    const lineagePath: StoredPerson[] = [];
+    const visited = new Set([id]);
+    for (let cursor = mentor ?? undefined; cursor && !visited.has(cursor.person.id); cursor = cursor.person.mentorId ? byId.get(cursor.person.mentorId) : undefined) {
+      visited.add(cursor.person.id);
+      lineagePath.unshift(cursor);
+    }
+    const childrenOf = new Map<string, string[]>();
+    records.forEach(({ person }) => {
+      if (!person.mentorId) return;
+      childrenOf.set(person.mentorId, [...(childrenOf.get(person.mentorId) ?? []), person.id]);
+    });
+    const descendants = new Set<string>();
+    const queue = [...(childrenOf.get(id) ?? [])];
+    while (queue.length) {
+      const next = queue.shift()!;
+      if (next === id || descendants.has(next)) continue;
+      descendants.add(next);
+      queue.push(...(childrenOf.get(next) ?? []));
+    }
+    const cohortPeers = record.person.cohortYear
+      ? records.filter(({ person }) => person.id !== id && person.cohortYear === record.person.cohortYear).slice(0, 12)
+      : [];
+    const canViewMembers = Boolean(viewer?.userId);
+    const attachments = await this.attachments(id, viewer);
+    const postCount = await this.db.prepare("SELECT COUNT(*) AS count FROM posts WHERE person_id = ? AND (visibility = 'public' OR ? = 1)")
+      .bind(id, canViewMembers ? 1 : 0).first<{ count: number }>();
     return {
       ...toSummary(record),
       role: record.person.role,
@@ -323,15 +361,22 @@ export class D1Persistence {
       tags: record.person.tags,
       mentor: mentor ? toSummary(mentor) : null,
       students: students.map(toSummary),
+      lineagePath: lineagePath.map(toSummary),
+      descendantCount: descendants.size,
+      cohortPeers: cohortPeers.map(toSummary),
+      postCount: Number(postCount?.count ?? 0),
       bio: record.person.bio,
+      motto: record.person.motto ?? null,
+      coverTheme: record.person.coverTheme ?? null,
       education: record.person.education,
       experience: record.person.experience,
       skills: record.person.skills,
       links: record.person.links,
       featuredNote: record.person.isFeatured ? "谱系中的重要节点" : null,
-      resume: (await this.attachments(id, viewer)).find((item) => item.category === "resume") ?? null,
-      achievements: viewer && (viewer.role === "admin" || viewer.personId === id) ? await this.achievements(id) : [],
-      attachments: await this.attachments(id, viewer),
+      resume: attachments.find((item) => item.category === "resume") ?? null,
+      // 事迹与荣誉和成员可见附件保持同一范围：登录成员可见，匿名访客不可见。
+      achievements: canViewMembers ? await this.achievements(id) : [],
+      attachments,
       // 联系邮箱属于个人资料的一部分，和简介/教育经历一样对所有访客展示。
       contactEmail: record.person.contactEmail,
       version: record.version,
@@ -383,7 +428,7 @@ export class D1Persistence {
     const person = await this.db.prepare("SELECT name FROM people WHERE id = ?").bind(personId).first<{ name: string }>();
     const result = await this.db.prepare(`SELECT id, person_id AS personId, achievement_id AS achievementId, original_name AS originalName,
       mime_type AS mimeType, size, category, visibility, status, NULL AS url, created_at AS createdAt, updated_at AS updatedAt
-      FROM attachments WHERE person_id = ? AND status = 'ready' AND category <> 'avatar' AND ((visibility = 'members' AND ? = 1) OR (visibility = 'private' AND ? = 1)) ORDER BY created_at DESC`).bind(personId, canViewMembers ? 1 : 0, canViewPrivate ? 1 : 0).all<{
+      FROM attachments WHERE person_id = ? AND status = 'ready' AND category <> 'avatar' AND post_id IS NULL AND ((visibility = 'members' AND ? = 1) OR (visibility = 'private' AND ? = 1)) ORDER BY created_at DESC`).bind(personId, canViewMembers ? 1 : 0, canViewPrivate ? 1 : 0).all<{
         id: string; personId: string; achievementId: string | null; originalName: string; mimeType: string;
         size: number; category: string; visibility: string; status: string; url: string | null; createdAt: string; updatedAt: string;
       }>();
@@ -392,10 +437,12 @@ export class D1Persistence {
 
   async attachment(id: string) {
     const row = await this.db.prepare(`SELECT a.id, a.person_id AS personId, a.object_key AS objectKey, a.original_name AS originalName,
-      a.mime_type AS mimeType, a.size, a.category, a.visibility, a.status, a.created_at AS createdAt, p.name AS personName
-      FROM attachments a JOIN people p ON p.id = a.person_id WHERE a.id = ?`).bind(id).first<{
+      a.mime_type AS mimeType, a.size, a.category, a.visibility, a.status, a.created_at AS createdAt, p.name AS personName,
+      a.post_id AS postId, post.visibility AS postVisibility
+      FROM attachments a JOIN people p ON p.id = a.person_id LEFT JOIN posts post ON post.id = a.post_id WHERE a.id = ?`).bind(id).first<{
         id: string; personId: string; objectKey: string; originalName: string; mimeType: string; size: number;
         category: string; visibility: string; status: string; createdAt: string; personName: string;
+        postId: string | null; postVisibility: "public" | "members" | null;
       }>();
     if (!row) return null;
     return { ...row, originalName: normalizedAttachmentName(row.personName, row.category, row.originalName, row.mimeType, row.id, row.createdAt) };
@@ -446,7 +493,8 @@ export class D1Persistence {
       person.role,
       person.generation,
       person.status === "archived" ? "毕业" : "在读",
-      person.destination ? destinationLabels[person.destination] : "",
+      person.destination ? destinationLabels[person.destination] ?? "" : "",
+      person.groupRole ? groupRoleLabels[person.groupRole] : "",
       ...person.tags,
     ].join(" ").toLocaleLowerCase().includes(text));
     return { items: matches.slice(0, limit).map(toSummary), total: matches.length };
@@ -591,8 +639,8 @@ export class D1Persistence {
       this.db.prepare(`
         INSERT INTO users (
           id, person_id, role, status, email, phone, display_name,
-          password_salt, password_hash, invite_token_hash
-        ) VALUES (?, ?, 'member', 'active', ?, ?, ?, ?, ?, ?)
+          password_salt, password_hash, invite_token_hash, activated_at
+        ) VALUES (?, ?, 'member', 'active', ?, ?, ?, ?, ?, ?, datetime('now'))
       `).bind(accountId, input.personId, email, phone, input.displayName.trim(), credentials.passwordSalt, credentials.passwordHash, input.inviteTokenHash ?? null),
       this.db.prepare("INSERT INTO auth_sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)")
         .bind(sessionTokenHash, accountId, expiresAt),
@@ -669,19 +717,23 @@ export class D1Persistence {
     }
     const credentials = await createPasswordFields(newPassword);
     await this.db.batch([
-      this.db.prepare(`UPDATE users SET password_salt = ?, password_hash = ?, must_change_password = 0, updated_at = datetime('now') WHERE id = ?`)
+      this.db.prepare(`UPDATE users SET password_salt = ?, password_hash = ?, must_change_password = 0,
+        activated_at = COALESCE(activated_at, datetime('now')), updated_at = datetime('now') WHERE id = ?`)
         .bind(credentials.passwordSalt, credentials.passwordHash, account.id),
       this.db.prepare("DELETE FROM auth_sessions WHERE user_id = ? AND token_hash <> ?").bind(account.id, tokenHash),
     ]);
     return { state: "updated" } as const;
   }
 
-  async updateProfile(personId: string, input: { version: number; bio?: string; destination?: Person["destination"]; memberType?: Person["memberType"] | null; contactEmail?: string | null; education?: string | null; experience?: string | null; skills?: string[]; links?: { label: string; url: string }[] }) {
+  async updateProfile(personId: string, input: { version: number; bio?: string; destination?: Person["destination"]; memberType?: Person["memberType"] | null; groupRole?: Person["groupRole"]; motto?: string | null; coverTheme?: string | null; contactEmail?: string | null; education?: string | null; experience?: string | null; skills?: string[]; links?: { label: string; url: string }[] }) {
     const assignments: string[] = [];
     const values: unknown[] = [];
     if (input.bio !== undefined) { assignments.push("bio = ?"); values.push(input.bio); }
     if ("destination" in input) { assignments.push("destination = ?"); values.push(input.destination ?? null); }
     if ("memberType" in input) { assignments.push("member_type = ?"); values.push(input.memberType ?? "formal"); }
+    if ("groupRole" in input) { assignments.push("group_role = ?"); values.push(input.groupRole ?? null); }
+    if ("motto" in input) { assignments.push("motto = ?"); values.push(input.motto || null); }
+    if ("coverTheme" in input) { assignments.push("cover_theme = ?"); values.push(input.coverTheme ?? null); }
     if ("contactEmail" in input) { assignments.push("contact_email = ?"); values.push(input.contactEmail ?? null); }
     if ("education" in input) { assignments.push("education = ?"); values.push(input.education ?? null); }
     if ("experience" in input) { assignments.push("experience = ?"); values.push(input.experience ?? null); }
@@ -699,6 +751,7 @@ export class D1Persistence {
     name?: string;
     cohortYear?: number | null;
     memberType?: Person["memberType"];
+    groupRole?: Person["groupRole"];
     status?: Person["status"];
   }) {
     const assignments: string[] = [];
@@ -706,6 +759,7 @@ export class D1Persistence {
     if (input.name !== undefined) { assignments.push("name = ?"); values.push(input.name.trim()); }
     if ("cohortYear" in input) { assignments.push("cohort_year = ?, cohort_id = NULL"); values.push(input.cohortYear ?? null); }
     if (input.memberType !== undefined) { assignments.push("member_type = ?"); values.push(input.memberType); }
+    if ("groupRole" in input) { assignments.push("group_role = ?"); values.push(input.groupRole ?? null); }
     if (input.status !== undefined) { assignments.push("status = ?"); values.push(input.status); }
     if (!assignments.length) return null;
     assignments.push("version = version + 1", "updated_at = datetime('now')");
@@ -719,6 +773,110 @@ export class D1Persistence {
         .bind(input.name.trim(), personId).run();
     }
     return this.personDetail(personId);
+  }
+
+  /** Direct students of a mentor with account and claim state for the student studio. */
+  async listStudents(mentorId: string, now = Date.now()) {
+    const rows = await this.db.prepare(`
+      SELECT p.id AS person_id, p.name, p.member_type, p.status, p.cohort_year, p.version, p.created_at, p.joined_at,
+        p.destination, p.group_role, p.role,
+        c.expires_at, c.claimed_at,
+        u.id AS account_id, u.email, u.phone, u.status AS account_status, u.must_change_password, u.activated_at,
+        (SELECT COUNT(*) FROM people s WHERE s.mentor_id = p.id) AS student_count,
+        (SELECT a.id FROM attachments a WHERE a.person_id = p.id AND a.category = 'avatar' AND a.status = 'ready' ORDER BY a.created_at DESC LIMIT 1) AS avatar_id
+      FROM people p
+      LEFT JOIN person_claims c ON c.person_id = p.id
+      LEFT JOIN users u ON u.person_id = p.id
+      WHERE p.mentor_id = ?
+      ORDER BY p.created_at DESC
+    `).bind(mentorId).all<{
+      person_id: string; name: string; member_type: Person["memberType"]; status: Person["status"]; cohort_year: number | null;
+      version: number; created_at: string; joined_at: string | null; destination: Person["destination"]; group_role: Person["groupRole"]; role: string;
+      expires_at: string | null; claimed_at: string | null;
+      account_id: string | null; email: string | null; phone: string | null; account_status: "active" | "disabled" | null;
+      must_change_password: number | null; activated_at: string | null; student_count: number; avatar_id: string | null;
+    }>();
+    return rows.results.map((row) => {
+      const claimState = row.expires_at === null ? null : row.claimed_at ? "claimed" : Date.parse(row.expires_at) <= now ? "expired" : "pending";
+      const activated = Boolean(row.activated_at);
+      return {
+        personId: row.person_id,
+        name: row.name,
+        memberType: row.member_type,
+        status: row.status,
+        groupRole: row.group_role ?? null,
+        destination: row.destination,
+        role: row.role,
+        version: row.version,
+        cohort: row.cohort_year ? { id: `cohort-${row.cohort_year}`, label: `${row.cohort_year}级`, year: row.cohort_year } : null,
+        avatarUrl: row.avatar_id ? `/api/attachments/${row.avatar_id}` : null,
+        studentCount: Number(row.student_count ?? 0),
+        createdAt: row.created_at,
+        joinedAt: row.joined_at ?? row.created_at.slice(0, 10),
+        expiresAt: row.expires_at ?? "",
+        claimedAt: row.claimed_at,
+        account: row.account_id ? {
+          identifier: row.email ?? row.phone ?? row.name,
+          status: row.account_status ?? "active",
+          activated,
+          mustChangePassword: Boolean(row.must_change_password),
+          canResetPassword: !activated && row.account_status === "active",
+        } : null,
+        claim: claimState ? { state: claimState, expiresAt: row.expires_at } : null,
+        // Legacy summary kept for older clients of /me/placeholder-students.
+        state: row.email || row.phone ? "account-created" : row.claimed_at ? "claimed" : row.expires_at && Date.parse(row.expires_at) <= now ? "expired" : "pending",
+      };
+    });
+  }
+
+  /**
+   * A mentor may re-issue the initial password only while the delegated account has never
+   * been activated by its owner. Once the student sets a password the mentor loses this ability.
+   */
+  async resetStudentInitialPassword(mentorId: string, personId: string) {
+    const account = await this.db.prepare(`
+      SELECT u.id, u.email, u.phone, p.name
+      FROM users u JOIN people p ON p.id = u.person_id
+      WHERE u.person_id = ? AND p.mentor_id = ? AND u.status = 'active' AND u.activated_at IS NULL
+    `).bind(personId, mentorId).first<{ id: string; email: string | null; phone: string | null; name: string }>();
+    if (!account) return { state: "not-allowed" } as const;
+    const temporaryPassword = `X${crypto.randomUUID().replace(/-/g, "").slice(0, 11)}!`;
+    const credentials = await createPasswordFields(temporaryPassword);
+    const result = await this.db.batch([
+      this.db.prepare(`UPDATE users SET password_salt = ?, password_hash = ?, must_change_password = 1, updated_at = datetime('now')
+        WHERE id = ? AND activated_at IS NULL`).bind(credentials.passwordSalt, credentials.passwordHash, account.id),
+      this.db.prepare("DELETE FROM auth_sessions WHERE user_id = ?").bind(account.id),
+    ]);
+    if ((result[0]?.meta.changes ?? 0) === 0) return { state: "not-allowed" } as const;
+    return { state: "reset", account: { identifier: account.email ?? account.phone ?? account.name, temporaryPassword, mustChangePassword: true } } as const;
+  }
+
+  async listMentorInvites(mentorId: string, now = Date.now()) {
+    const rows = await this.db.prepare(`
+      SELECT i.token_hash AS id, i.created_at, i.expires_at, i.accepted_at, i.revoked_at,
+        i.accepted_person_id, p.name AS accepted_name
+      FROM invitations i LEFT JOIN people p ON p.id = i.accepted_person_id
+      WHERE i.mentor_id = ?
+      ORDER BY i.created_at DESC
+      LIMIT 50
+    `).bind(mentorId).all<{ id: string; created_at: string; expires_at: string; accepted_at: string | null; revoked_at: string | null; accepted_person_id: string | null; accepted_name: string | null }>();
+    return rows.results.map((row) => ({
+      id: row.id,
+      createdAt: row.created_at,
+      expiresAt: row.expires_at,
+      acceptedAt: row.accepted_at,
+      revokedAt: row.revoked_at,
+      acceptedPerson: row.accepted_person_id ? { id: row.accepted_person_id, name: row.accepted_name ?? "" } : null,
+      state: row.revoked_at ? "revoked" : row.accepted_at ? "accepted" : Date.parse(row.expires_at) <= now ? "expired" : "pending",
+    }));
+  }
+
+  async revokeMentorInvite(mentorId: string, inviteId: string, actorUserId: string) {
+    const result = await this.db.prepare(`
+      UPDATE invitations SET revoked_at = datetime('now'), revoked_by_user_id = ?, expires_at = ?
+      WHERE token_hash = ? AND mentor_id = ? AND accepted_at IS NULL AND revoked_at IS NULL
+    `).bind(actorUserId, new Date().toISOString(), inviteId, mentorId).run();
+    return (result.meta.changes ?? 0) > 0;
   }
 
   async createInvite(mentorId: string, createdByUserId: string, now = Date.now(), ttlMs = INVITE_TTL_MS) {
@@ -786,28 +944,7 @@ export class D1Persistence {
   }
 
   async listPlaceholders(mentorId: string) {
-    const rows = await this.db.prepare(`
-      SELECT p.id AS person_id, p.name, p.member_type, p.status, p.cohort_year, p.version,
-        p.created_at, c.expires_at, c.claimed_at, u.email, u.phone
-      FROM people p
-      LEFT JOIN person_claims c ON c.person_id = p.id
-      LEFT JOIN users u ON u.person_id = p.id
-      WHERE p.mentor_id = ?
-      ORDER BY p.created_at DESC
-    `).bind(mentorId).all<ClaimRow & { name: string; member_type: string; status: string; cohort_year: number | null; version: number; email: string | null; phone: string | null }>();
-    return rows.results.map((row) => ({
-      personId: row.person_id,
-      name: row.name,
-      memberType: row.member_type,
-      status: row.status,
-      version: row.version,
-      cohort: row.cohort_year ? { id: `cohort-${row.cohort_year}`, label: `${row.cohort_year}级`, year: row.cohort_year } : null,
-      createdAt: row.created_at,
-      expiresAt: row.expires_at ?? "",
-      claimedAt: row.claimed_at,
-      account: { identifier: row.email ?? row.phone ?? row.name },
-      state: row.email || row.phone ? "account-created" : row.claimed_at ? "claimed" : row.expires_at && Date.parse(row.expires_at) <= Date.now() ? "expired" : "pending",
-    }));
+    return this.listStudents(mentorId);
   }
 
   async rotatePlaceholderClaim(mentorId: string, personId: string, now = Date.now(), ttlMs = 30 * 24 * 60 * 60 * 1000) {
@@ -868,10 +1005,10 @@ export class D1Persistence {
         this.db.prepare(`UPDATE people SET name = ?, role = '星谱成员', version = version + 1, updated_at = datetime('now') WHERE id = ?`)
           .bind(displayName, inspected.claim.personId),
         existing
-          ? this.db.prepare(`UPDATE users SET email = ?, phone = ?, display_name = ?, password_salt = ?, password_hash = ?, must_change_password = 0, updated_at = datetime('now') WHERE id = ?`)
+          ? this.db.prepare(`UPDATE users SET email = ?, phone = ?, display_name = ?, password_salt = ?, password_hash = ?, must_change_password = 0, activated_at = COALESCE(activated_at, datetime('now')), updated_at = datetime('now') WHERE id = ?`)
             .bind(email, phone, displayName, credentials.passwordSalt, credentials.passwordHash, accountId)
-          : this.db.prepare(`INSERT INTO users (id, person_id, role, status, email, phone, display_name, password_salt, password_hash)
-            VALUES (?, ?, 'member', 'active', ?, ?, ?, ?, ?)`)
+          : this.db.prepare(`INSERT INTO users (id, person_id, role, status, email, phone, display_name, password_salt, password_hash, activated_at)
+            VALUES (?, ?, 'member', 'active', ?, ?, ?, ?, ?, datetime('now'))`)
             .bind(accountId, inspected.claim.personId, email, phone, displayName, credentials.passwordSalt, credentials.passwordHash),
         this.db.prepare("INSERT INTO auth_sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)")
           .bind(sessionTokenHash, accountId, expiresAt),
