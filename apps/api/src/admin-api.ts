@@ -3,6 +3,7 @@ import { createPasswordFields, normalizeEmail, normalizePhone } from "./session.
 import { isValidEmail, isValidPhone } from "../../../packages/shared/src/account-identifiers.ts";
 import { persistence } from "./persistence.ts";
 import { canRecordDestination, cohortOrderValid, isValidDateOnly, joinedAtFromSeason, joinSeasonAt } from "../../../packages/shared/src/domain.ts";
+import { effectiveAdminPolicy, PERMANENT_ADMIN_EMAIL } from "../../../packages/shared/src/admin-policy.ts";
 import type { Env } from "./types.ts";
 
 type AdminVariables = {
@@ -35,6 +36,8 @@ type MemberRow = {
   phone: string | null;
   account_role: "member" | "admin" | null;
   account_status: "active" | "disabled" | null;
+  permanent_admin?: boolean;
+  admin_reason?: "permanent_owner" | "active_group_leader" | null;
 };
 
 type AccountRow = {
@@ -42,6 +45,7 @@ type AccountRow = {
   role: "member" | "admin";
   status: "active" | "disabled";
   person_id: string | null;
+  email: string | null;
 };
 
 const destinations = new Set(["big_tech", "postgraduate_985", "postgraduate_211", "other"]);
@@ -76,11 +80,7 @@ async function deletePersonAndAccount(
 ) {
   const db = env.DB!;
   if (account?.id === actor.id) return error(409, "CANNOT_DELETE_SELF", "不能删除自己的账号");
-  if (account?.role === "admin" && account.status === "active") {
-    const remaining = await db.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND status = 'active' AND id <> ?")
-      .bind(account.id).first<{ count: number }>();
-    if (Number(remaining?.count ?? 0) === 0) return error(409, "LAST_ADMIN", "不能删除最后一位管理员");
-  }
+  if (account?.email?.trim().toLocaleLowerCase() === PERMANENT_ADMIN_EMAIL) return error(409, "PERMANENT_ADMIN_PROTECTED", "永久管理员账号不能删除");
   if (personId) {
     const students = await db.prepare("SELECT COUNT(*) AS count FROM people WHERE mentor_id = ?")
       .bind(personId).first<{ count: number }>();
@@ -131,9 +131,12 @@ async function mentorProblem(db: D1Database, personId: string, mentorId: string 
   if (!mentor) return "MENTOR_NOT_FOUND";
   if (cohortYear !== undefined && !cohortOrderValid(mentor.cohort_year, cohortYear)) return "COHORT_ORDER";
   if (relationScope === "lineage" && mentor.relation_scope !== "lineage") {
-    const adminMentor = await db.prepare("SELECT 1 FROM users WHERE person_id = ? AND role = 'admin' AND status = 'active'")
-      .bind(mentorId).first();
-    if (!adminMentor) return "MENTOR_NOT_LINEAGE";
+    const adminMentor = await db.prepare(`
+      SELECT u.email, p.status AS person_status, COALESCE(p.cohort_year, c.year) AS cohort_year, p.group_role
+      FROM users u JOIN people p ON p.id = u.person_id LEFT JOIN cohorts c ON c.id = p.cohort_id
+      WHERE u.person_id = ? AND u.status = 'active'
+    `).bind(mentorId).first<{ email: string | null; person_status: "active" | "archived"; cohort_year: number | null; group_role: "leader" | "vice_leader" | null }>();
+    if (!adminMentor || effectiveAdminPolicy({ email: adminMentor.email, personStatus: adminMentor.person_status, cohortYear: adminMentor.cohort_year, groupRole: adminMentor.group_role }).role !== "admin") return "MENTOR_NOT_LINEAGE";
   }
   const cycle = await db.prepare(`
     WITH RECURSIVE descendants(id) AS (
@@ -189,7 +192,13 @@ adminApi.get("/members", async (c) => {
     LEFT JOIN users u ON u.person_id = p.id
     ORDER BY COALESCE(p.cohort_year, c.year, 9999), p.name, p.id
   `).all<MemberRow>();
-  return c.json({ data: rows.results, meta: { total: rows.results.length } });
+  const at = new Date();
+  const data = rows.results.map((row) => {
+    if (!row.account_id) return { ...row, account_role: null, permanent_admin: false, admin_reason: null };
+    const policy = effectiveAdminPolicy({ email: row.email, personStatus: row.status, cohortYear: row.cohort_year, groupRole: row.group_role as "leader" | "vice_leader" | null }, at);
+    return { ...row, account_role: policy.role, permanent_admin: policy.permanentAdmin, admin_reason: policy.adminReason };
+  });
+  return c.json({ data, meta: { total: data.length } });
 });
 
 adminApi.post("/members", async (c) => {
@@ -199,8 +208,9 @@ adminApi.post("/members", async (c) => {
   const rawCohortYear = body?.cohortYear === null || body?.cohortYear === undefined || body?.cohortYear === "" ? null : Number(body?.cohortYear);
   const mentorId = nullableId(body?.mentorId);
   const status = typeof body?.status === "string" && personStatuses.has(body.status) ? body.status : "active";
-  if (Object.prototype.hasOwnProperty.call(body ?? {}, "memberType")) return error(403, "MEMBER_TYPE_FORBIDDEN", "请由本人的直接师傅设置组员身份");
-  if (Object.prototype.hasOwnProperty.call(body ?? {}, "groupRole")) return error(403, "GROUP_ROLE_FORBIDDEN", "请由本人的直接师傅或上一届正副组长设置组内职务");
+  const memberType = body?.memberType === undefined ? "formal" : body.memberType === "formal" || body.memberType === "probationary" ? body.memberType : null;
+  const groupRole = body?.groupRole === undefined || body.groupRole === null || body.groupRole === "" ? null
+    : body.groupRole === "leader" || body.groupRole === "vice_leader" ? body.groupRole : undefined;
   const birthday = body?.birthday === null || body?.birthday === undefined || body?.birthday === "" ? null
     : typeof body.birthday === "string" && isValidDateOnly(body.birthday) ? body.birthday : undefined;
   const hasJoinParts = body?.joinedYear !== undefined || body?.joinedSeason !== undefined;
@@ -217,7 +227,7 @@ adminApi.post("/members", async (c) => {
   const cohortYear = rawCohortYear === null && legacyCohortId
     ? (await c.env.DB!.prepare("SELECT year FROM cohorts WHERE id = ?").bind(legacyCohortId).first<{ year: number | null }>())?.year ?? null
     : rawCohortYear;
-  if (!name || destination === undefined || birthday === undefined
+  if (!name || !memberType || groupRole === undefined || destination === undefined || birthday === undefined
     || (hasJoinParts && (!Number.isInteger(joinedYear) || joinedYear < 1900 || joinedYear > 2200 || !joinedSeason))
     || (cohortYear !== null && (!Number.isInteger(cohortYear) || cohortYear < 1900 || cohortYear > 2200))) return error(400, "VALIDATION_ERROR", "请检查姓名、级别年份、生日、进组时间和去向");
   if (destination && !canRecordDestination({ status: status as "active" | "archived", cohortYear })) return destinationError();
@@ -231,9 +241,9 @@ adminApi.post("/members", async (c) => {
         INSERT INTO people (
           id, name, nickname, mentor_id, cohort_id, cohort_year, relation_scope, bio,
           is_featured, status, member_type, destination, group_role, role, joined_at, birthday, tags_json
-        ) VALUES (?, ?, NULL, ?, NULL, ?, ?, '', 0, ?, 'formal', ?, NULL, '星谱成员', ?, ?, '[]')
-      `).bind(id, name, mentorId, cohortYear, relationScope, status, destination, joinedAt, birthday),
-      audit(c.env.DB!, actor.id, "member.create", "person", id, { name, cohortYear, mentorId, status, memberType: "formal", destination, groupRole: null, joinedAt, birthday, relationScope }),
+        ) VALUES (?, ?, NULL, ?, NULL, ?, ?, '', 0, ?, ?, ?, ?, '星谱成员', ?, ?, '[]')
+      `).bind(id, name, mentorId, cohortYear, relationScope, status, memberType, destination, groupRole, joinedAt, birthday),
+      audit(c.env.DB!, actor.id, "member.create", "person", id, { name, cohortYear, mentorId, status, memberType, destination, groupRole, joinedAt, birthday, relationScope }),
     ]);
   } catch (cause) {
     const code = String(cause).match(/MENTOR_(SELF|NOT_FOUND|NOT_LINEAGE|CYCLE)|SCOPE_MENTOR_CONFLICT|HAS_LINEAGE_STUDENTS|COHORT_ORDER/)?.[0];
@@ -253,8 +263,6 @@ adminApi.patch("/members/:id", async (c) => {
   let resultingCohortYear = existing.cohort_year;
   let resultingStatus = existing.status;
   let resultingDestination: string | null = null;
-  if (Object.prototype.hasOwnProperty.call(body, "memberType")) return error(403, "MEMBER_TYPE_FORBIDDEN", "请通过成员资料页由本人的直接师傅设置组员身份");
-  if (Object.prototype.hasOwnProperty.call(body, "groupRole")) return error(403, "GROUP_ROLE_FORBIDDEN", "请通过成员资料页由本人的直接师傅或上一届正副组长设置组内职务");
   const assignments: string[] = [];
   const values: unknown[] = [];
   const details: Record<string, unknown> = {};
@@ -304,6 +312,16 @@ adminApi.patch("/members/:id", async (c) => {
     if (typeof body.status !== "string" || !personStatuses.has(body.status)) return error(400, "VALIDATION_ERROR", "人物状态无效");
     assignments.push("status = ?"); values.push(body.status); details.status = body.status;
     resultingStatus = body.status as "active" | "archived";
+  }
+  if ("memberType" in body) {
+    if (body.memberType !== "formal" && body.memberType !== "probationary") return error(400, "VALIDATION_ERROR", "组员身份无效");
+    assignments.push("member_type = ?"); values.push(body.memberType); details.memberType = body.memberType;
+  }
+  if ("groupRole" in body) {
+    const groupRole = body.groupRole === null || body.groupRole === "" ? null
+      : body.groupRole === "leader" || body.groupRole === "vice_leader" ? body.groupRole : undefined;
+    if (groupRole === undefined) return error(400, "VALIDATION_ERROR", "组内职务无效");
+    assignments.push("group_role = ?"); values.push(groupRole); details.groupRole = groupRole;
   }
   if ("destination" in body) {
     const destination = body.destination === null || body.destination === "" ? null
@@ -367,7 +385,7 @@ adminApi.delete("/members/:id", async (c) => {
   if (!await c.env.DB!.prepare("SELECT id FROM people WHERE id = ?").bind(personId).first()) {
     return error(404, "PERSON_NOT_FOUND", "人物不存在");
   }
-  const account = await c.env.DB!.prepare("SELECT id, role, status, person_id FROM users WHERE person_id = ?")
+  const account = await c.env.DB!.prepare("SELECT id, role, status, person_id, email FROM users WHERE person_id = ?")
     .bind(personId).first<AccountRow>();
   const result = await deletePersonAndAccount(c.env, c.get("adminUser"), personId, account ?? null);
   if (result instanceof Response) return result;
@@ -445,16 +463,12 @@ adminApi.patch("/accounts/:id/status", async (c) => {
   const body = await c.req.json().catch(() => null) as { status?: unknown } | null;
   const status = body?.status;
   if (status !== "active" && status !== "disabled") return error(400, "VALIDATION_ERROR", "账号状态无效");
-  const account = await c.env.DB!.prepare("SELECT id, role, status FROM users WHERE id = ?")
-    .bind(id).first<{ id: string; role: "member" | "admin"; status: "active" | "disabled" }>();
+  const account = await c.env.DB!.prepare("SELECT id, role, status, email FROM users WHERE id = ?")
+    .bind(id).first<{ id: string; role: "member" | "admin"; status: "active" | "disabled"; email: string | null }>();
   if (!account) return error(404, "ACCOUNT_NOT_FOUND", "账号不存在");
   const actor = c.get("adminUser");
+  if (status === "disabled" && account.email?.trim().toLocaleLowerCase() === PERMANENT_ADMIN_EMAIL) return error(409, "PERMANENT_ADMIN_PROTECTED", "永久管理员账号不能停用");
   if (status === "disabled" && id === actor.id) return error(409, "CANNOT_DISABLE_SELF", "不能停用自己的账号");
-  if (status === "disabled" && account.role === "admin") {
-    const remaining = await c.env.DB!.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND status = 'active' AND id <> ?")
-      .bind(id).first<{ count: number }>();
-    if (Number(remaining?.count ?? 0) === 0) return error(409, "LAST_ADMIN", "不能停用最后一位管理员");
-  }
   await c.env.DB!.batch([
     c.env.DB!.prepare("UPDATE users SET status = ?, updated_at = datetime('now') WHERE id = ?").bind(status, id),
     ...(status === "disabled" ? [c.env.DB!.prepare("DELETE FROM auth_sessions WHERE user_id = ?").bind(id)] : []),
@@ -467,7 +481,7 @@ adminApi.patch("/accounts/:id/status", async (c) => {
 // with direct students is blocked so the lineage is never silently orphaned.
 adminApi.delete("/accounts/:id", async (c) => {
   const id = c.req.param("id");
-  const account = await c.env.DB!.prepare("SELECT id, role, status, person_id FROM users WHERE id = ?")
+  const account = await c.env.DB!.prepare("SELECT id, role, status, person_id, email FROM users WHERE id = ?")
     .bind(id).first<AccountRow>();
   if (!account) return error(404, "ACCOUNT_NOT_FOUND", "账号不存在");
   const result = await deletePersonAndAccount(c.env, c.get("adminUser"), account.person_id, account, "account.delete");
@@ -480,21 +494,10 @@ adminApi.patch("/accounts/:id/role", async (c) => {
   const body = await c.req.json().catch(() => null) as { role?: unknown } | null;
   const role = body?.role;
   if (role !== "member" && role !== "admin") return error(400, "VALIDATION_ERROR", "账号角色无效");
-  const account = await c.env.DB!.prepare("SELECT id, role, status FROM users WHERE id = ?")
-    .bind(id).first<{ id: string; role: "member" | "admin"; status: "active" | "disabled" }>();
+  const account = await c.env.DB!.prepare("SELECT id, email FROM users WHERE id = ?").bind(id).first<{ id: string; email: string | null }>();
   if (!account) return error(404, "ACCOUNT_NOT_FOUND", "账号不存在");
-  const actor = c.get("adminUser");
-  if (role === "member" && id === actor.id) return error(409, "CANNOT_DEMOTE_SELF", "不能降低自己的管理员权限");
-  if (role === "member" && account.role === "admin" && account.status === "active") {
-    const remaining = await c.env.DB!.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND status = 'active' AND id <> ?")
-      .bind(id).first<{ count: number }>();
-    if (Number(remaining?.count ?? 0) === 0) return error(409, "LAST_ADMIN", "不能移除最后一位管理员");
-  }
-  await c.env.DB!.batch([
-    c.env.DB!.prepare("UPDATE users SET role = ?, updated_at = datetime('now') WHERE id = ?").bind(role, id),
-    audit(c.env.DB!, actor.id, "account.role_update", "user", id, { role }),
-  ]);
-  return c.json({ data: { id, role } });
+  if (account.email?.trim().toLocaleLowerCase() === PERMANENT_ADMIN_EMAIL) return error(409, "PERMANENT_ADMIN_PROTECTED", "永久管理员权限不能修改");
+  return error(409, "ROLE_MANAGED_AUTOMATICALLY", "管理员权限由在读正副组长职务自动管理");
 });
 
 adminApi.post("/accounts/:id/reset-password", async (c) => {
@@ -502,7 +505,9 @@ adminApi.post("/accounts/:id/reset-password", async (c) => {
   const body = await c.req.json().catch(() => null) as { password?: unknown } | null;
   const password = typeof body?.password === "string" ? body.password : "";
   if (password.length < 8 || password.length > 100) return error(400, "VALIDATION_ERROR", "新密码长度需为 8 到 100 位");
-  if (!await c.env.DB!.prepare("SELECT id FROM users WHERE id = ?").bind(id).first()) return error(404, "ACCOUNT_NOT_FOUND", "账号不存在");
+  const account = await c.env.DB!.prepare("SELECT id, email FROM users WHERE id = ?").bind(id).first<{ id: string; email: string | null }>();
+  if (!account) return error(404, "ACCOUNT_NOT_FOUND", "账号不存在");
+  if (account.email?.trim().toLocaleLowerCase() === PERMANENT_ADMIN_EMAIL) return error(409, "PERMANENT_ADMIN_PROTECTED", "永久管理员密码不能由其他管理员重置");
   const credentials = await createPasswordFields(password);
   const actor = c.get("adminUser");
   await c.env.DB!.batch([
@@ -560,7 +565,6 @@ adminApi.post("/accounts", async (c) => {
   const email = rawEmail.trim() ? normalizeEmail(rawEmail) : "";
   const phone = rawPhone.trim() ? normalizePhone(rawPhone) : null;
   const password = typeof body?.password === "string" ? body.password : "";
-  const role = body?.role === "admin" ? "admin" : "member";
   if (!personId || (!email && !phone) || (rawEmail.trim() && !isValidEmail(rawEmail)) || (rawPhone.trim() && !isValidPhone(rawPhone))
     || password.length < 8 || password.length > 100) {
     return error(400, "VALIDATION_ERROR", "请检查人物、邮箱或手机号和密码");
@@ -576,9 +580,9 @@ adminApi.post("/accounts", async (c) => {
   await c.env.DB!.batch([
     c.env.DB!.prepare(`
       INSERT INTO users (id, person_id, role, status, email, phone, display_name, password_salt, password_hash, must_change_password, activated_at)
-      VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, 0, datetime('now'))
-    `).bind(id, personId, role, email, phone, person.name, credentials.passwordSalt, credentials.passwordHash),
-    audit(c.env.DB!, actor.id, "account.create", "user", id, { personId, email, phone, role }),
+      VALUES (?, ?, 'member', 'active', ?, ?, ?, ?, ?, 0, datetime('now'))
+    `).bind(id, personId, email, phone, person.name, credentials.passwordSalt, credentials.passwordHash),
+    audit(c.env.DB!, actor.id, "account.create", "user", id, { personId, email, phone, role: "member" }),
   ]);
   return c.json({ data: { id } }, 201);
 });

@@ -5,6 +5,10 @@ const adminEmail = process.env.ADMIN_EMAIL;
 const adminPassword = process.env.ADMIN_PASSWORD;
 if (!adminEmail || !adminPassword) throw new Error("Set ADMIN_EMAIL and ADMIN_PASSWORD for the local admin.");
 const runId = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
+const shanghaiNow = new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Shanghai", year: "numeric", month: "numeric" })
+  .formatToParts(new Date());
+const currentAcademicYear = Number(shanghaiNow.find((part) => part.type === "year")?.value)
+  - (Number(shanghaiNow.find((part) => part.type === "month")?.value) < 9 ? 1 : 0);
 
 async function request(path, { token, body, ...init } = {}) {
   const response = await fetch(`${base}${path}`, {
@@ -42,6 +46,8 @@ for (const invalidIdentifier of ["wan jundi", "not-an-email", "123456", "1234567
 
 const admin = await login(adminEmail, adminPassword);
 assert.equal(admin.user.role, "admin");
+assert.equal(admin.user.permanentAdmin, true);
+assert.equal(admin.user.adminReason, "permanent_owner");
 // The super administrator is intentionally stored outside the lineage, but
 // still manages invitations and delegated student accounts.
 const adminInvite = await request("/api/invites", { token: admin.token, method: "POST", body: {} });
@@ -74,6 +80,13 @@ async function createPerson(name, mentorId = null, cohortYear = undefined) {
   } });
   assert.equal(result.response.status, 201, JSON.stringify(result.payload));
   return result.payload.data.id;
+}
+async function adminMember(id, token = admin.token) {
+  const result = await request("/api/admin/members", { token });
+  assert.equal(result.response.status, 200, JSON.stringify(result.payload));
+  const member = result.payload.data.find((item) => item.id === id);
+  assert.ok(member, `admin member ${id} was not found`);
+  return member;
 }
 // Students always join a later cohort than their mentor.
 const parentId = await createPerson(`Smoke parent ${runId}`, null, 2096);
@@ -108,12 +121,76 @@ const mentorAccount = await request("/api/admin/accounts", { token: admin.token,
 assert.equal(mentorAccount.response.status, 201, JSON.stringify(mentorAccount.payload));
 const mentorSession = await login(mentorEmail, mentorPassword);
 const membershipVersion = (await request(`/api/people/${childId}`, { token: mentorSession.token })).payload.data.version;
-assert.equal((await request(`/api/admin/members/${childId}`, { token: admin.token, method: "PATCH", body: { version: membershipVersion, memberType: "probationary" } })).response.status, 403, "admin cannot bypass mentor-only member type edits");
 assert.equal((await request(`/api/people/${childId}/membership`, { token: memberSession.token, method: "PATCH", body: { version: membershipVersion, groupRole: "leader" } })).response.status, 403, "members cannot set their own group role");
-const mentorMembership = await request(`/api/people/${childId}/membership`, { token: mentorSession.token, method: "PATCH", body: { version: membershipVersion, memberType: "probationary", groupRole: "vice_leader" } });
-assert.equal(mentorMembership.response.status, 200, JSON.stringify(mentorMembership.payload));
-assert.equal(mentorMembership.payload.data.memberType, "probationary");
-assert.equal(mentorMembership.payload.data.groupRole, "vice_leader");
+const adminMembership = await request(`/api/admin/members/${childId}`, { token: admin.token, method: "PATCH", body: {
+  version: membershipVersion, memberType: "probationary", groupRole: "vice_leader",
+} });
+assert.equal(adminMembership.response.status, 200, JSON.stringify(adminMembership.payload));
+const membershipAfterAdmin = await adminMember(childId);
+assert.equal(membershipAfterAdmin.member_type, "probationary");
+assert.equal(membershipAfterAdmin.group_role, "vice_leader");
+assert.equal((await request(`/api/admin/members/${childId}`, { token: admin.token, method: "PATCH", body: { version: membershipVersion, memberType: "formal" } })).response.status, 409, "membership edits preserve optimistic concurrency");
+assert.equal((await request(`/api/admin/members/${childId}`, { token: admin.token, method: "PATCH", body: { version: membershipAfterAdmin.version, memberType: "alumni" } })).response.status, 400, "unknown member types are rejected");
+assert.equal((await request(`/api/admin/members/${childId}`, { token: admin.token, method: "PATCH", body: { version: membershipAfterAdmin.version, groupRole: "captain" } })).response.status, 400, "unknown group roles are rejected");
+
+const managedEmail = `managed-admin-${runId}@example.com`;
+const managedPassword = "managed-admin-password-2026";
+assert.equal((await request("/api/admin/members", { token: admin.token, method: "POST", body: {
+  name: `万骏頔 ${runId}`, cohortYear: currentAcademicYear, status: "active", destination: null,
+  mentorId: null, memberType: "probationary", groupRole: null,
+} })).response.status, 201);
+const managedPerson = (await request("/api/admin/members", { token: admin.token })).payload.data.find((item) => item.name === `万骏頔 ${runId}`);
+assert.ok(managedPerson);
+assert.equal(managedPerson.member_type, "probationary");
+assert.equal(managedPerson.group_role, null);
+const managedAccount = await request("/api/admin/accounts", { token: admin.token, method: "POST", body: {
+  personId: managedPerson.id, email: managedEmail, password: managedPassword, role: "admin",
+} });
+assert.equal(managedAccount.response.status, 201, JSON.stringify(managedAccount.payload));
+const managedSession = await login(managedEmail, managedPassword);
+assert.equal(managedSession.user.role, "member", "the owner's name and a requested role cannot bypass the email-bound policy");
+
+const promoteManaged = await request(`/api/admin/members/${managedPerson.id}`, { token: admin.token, method: "PATCH", body: {
+  version: managedPerson.version, memberType: "formal", groupRole: "leader",
+} });
+assert.equal(promoteManaged.response.status, 200, JSON.stringify(promoteManaged.payload));
+assert.equal((await request("/api/admin/members", { token: managedSession.token })).response.status, 200, "an existing session is promoted immediately");
+assert.equal((await request(`/api/admin/accounts/${managedAccount.payload.data.id}/role`, { token: managedSession.token, method: "PATCH", body: { role: "member" } })).response.status, 409, "manual roles cannot override automatic policy");
+
+const managedAfterPromotion = await adminMember(managedPerson.id);
+const removeManagedRole = await request(`/api/admin/members/${managedPerson.id}`, { token: admin.token, method: "PATCH", body: {
+  version: managedAfterPromotion.version, groupRole: null,
+} });
+assert.equal(removeManagedRole.response.status, 200, JSON.stringify(removeManagedRole.payload));
+assert.equal((await request("/api/admin/members", { token: managedSession.token })).response.status, 403, "role removal revokes an existing admin session");
+const managedAfterRoleRemoval = await adminMember(managedPerson.id);
+const restoreManagedRole = await request(`/api/admin/members/${managedPerson.id}`, { token: admin.token, method: "PATCH", body: {
+  version: managedAfterRoleRemoval.version, groupRole: "vice_leader",
+} });
+assert.equal(restoreManagedRole.response.status, 200, JSON.stringify(restoreManagedRole.payload));
+assert.equal((await request("/api/admin/members", { token: managedSession.token })).response.status, 200, "deputies are promoted on existing sessions");
+const managedAfterRoleRestore = await adminMember(managedPerson.id);
+const ageManagedOut = await request(`/api/admin/members/${managedPerson.id}`, { token: admin.token, method: "PATCH", body: {
+  version: managedAfterRoleRestore.version, cohortYear: currentAcademicYear - 4,
+} });
+assert.equal(ageManagedOut.response.status, 200, JSON.stringify(ageManagedOut.payload));
+assert.equal((await request("/api/admin/members", { token: managedSession.token })).response.status, 403, "an out-of-range cohort revokes an existing session");
+const managedAfterAging = await adminMember(managedPerson.id);
+const restoreManagedCohort = await request(`/api/admin/members/${managedPerson.id}`, { token: admin.token, method: "PATCH", body: {
+  version: managedAfterAging.version, cohortYear: currentAcademicYear,
+} });
+assert.equal(restoreManagedCohort.response.status, 200, JSON.stringify(restoreManagedCohort.payload));
+const managedAfterCohortRestore = await adminMember(managedPerson.id);
+const archiveManaged = await request(`/api/admin/members/${managedPerson.id}`, { token: admin.token, method: "PATCH", body: {
+  version: managedAfterCohortRestore.version, status: "archived",
+} });
+assert.equal(archiveManaged.response.status, 200, JSON.stringify(archiveManaged.payload));
+assert.equal((await request("/api/admin/members", { token: managedSession.token })).response.status, 403, "archival revokes an existing admin session");
+const managedAfterArchive = await adminMember(managedPerson.id);
+const reactivateManaged = await request(`/api/admin/members/${managedPerson.id}`, { token: admin.token, method: "PATCH", body: {
+  version: managedAfterArchive.version, status: "active",
+} });
+assert.equal(reactivateManaged.response.status, 200, JSON.stringify(reactivateManaged.payload));
 
 const placeholder = await request("/api/me/placeholder-students", { token: memberSession.token, method: "POST", body: {
   name: `待认领 ${runId}`, nickname: "挂名节点", loginIdentifier: `placeholder-${runId}@example.com`, memberType: "probationary", cohortId,
@@ -453,8 +530,29 @@ assert.equal(deletedMemberWithAccount.response.status, 200, JSON.stringify(delet
 assert.equal(deletedMemberWithAccount.payload.data.accountDeleted, true);
 assert.equal((await request("/api/session", { token: memberDeleteSession.token })).response.status, 401);
 assert.equal((await request(`/api/people/${memberDeletePersonId}`)).response.status, 404);
-assert.equal((await request(`/api/admin/accounts/${admin.user.id}/status`, { token: admin.token, method: "PATCH", body: { status: "disabled" } })).response.status, 409);
-assert.equal((await request(`/api/admin/accounts/${admin.user.id}/role`, { token: admin.token, method: "PATCH", body: { role: "member" } })).response.status, 409);
+const ownerRow = (await request("/api/admin/members", { token: admin.token })).payload.data.find((item) => item.id === admin.user.personId);
+assert.ok(ownerRow);
+const archiveOwner = await request(`/api/admin/members/${ownerRow.id}`, { token: managedSession.token, method: "PATCH", body: {
+  version: ownerRow.version, status: "archived", groupRole: null,
+} });
+assert.equal(archiveOwner.response.status, 200, JSON.stringify(archiveOwner.payload));
+const ownerAfterArchive = await request("/api/session", { token: admin.token });
+assert.equal(ownerAfterArchive.response.status, 200);
+assert.equal(ownerAfterArchive.payload.data.user.role, "admin", "the permanent owner remains admin while archived without a group role");
+assert.equal(ownerAfterArchive.payload.data.user.permanentAdmin, true);
+
+for (const [label, protectedRequest] of [
+  ["disable", () => request(`/api/admin/accounts/${admin.user.id}/status`, { token: managedSession.token, method: "PATCH", body: { status: "disabled" } })],
+  ["delete", () => request(`/api/admin/accounts/${admin.user.id}`, { token: managedSession.token, method: "DELETE" })],
+  ["reset", () => request(`/api/admin/accounts/${admin.user.id}/reset-password`, { token: managedSession.token, method: "POST", body: { password: "replacement-password-2026" } })],
+]) {
+  const protectedResult = await protectedRequest();
+  assert.equal(protectedResult.response.status, 409, `another admin cannot ${label} the permanent owner`);
+  assert.equal(protectedResult.payload.error.code, "PERMANENT_ADMIN_PROTECTED");
+}
+const ownerRoleOverride = await request(`/api/admin/accounts/${admin.user.id}/role`, { token: managedSession.token, method: "PATCH", body: { role: "member" } });
+assert.equal(ownerRoleOverride.response.status, 409);
+assert.equal(ownerRoleOverride.payload.error.code, "PERMANENT_ADMIN_PROTECTED");
 
 const audit = await request("/api/admin/audit-logs", { token: admin.token });
 assert.ok(audit.payload.data.some((item) => item.action === "invite.revoke"));

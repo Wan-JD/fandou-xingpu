@@ -5,6 +5,8 @@ export interface SessionUser {
   displayName: string;
   personId: string;
   role: "member" | "admin";
+  permanentAdmin: boolean;
+  adminReason: "permanent_owner" | "active_group_leader" | null;
   mustChangePassword: boolean;
 }
 

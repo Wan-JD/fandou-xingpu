@@ -11,6 +11,7 @@ type Member = {
   bio: string; role: string; member_type: "formal" | "probationary"; is_featured: number; featured_note: string | null; tags_json: string;
   account_id: string | null; email: string | null; phone: string | null; account_role: "member" | "admin" | null;
   account_status: "active" | "disabled" | null;
+  permanent_admin: boolean; admin_reason: "permanent_owner" | "active_group_leader" | null;
 };
 type Cohort = { id: string; label: string; year: number | null; sort_order: number; description: string; member_count: number };
 type Invite = { id: string; mentor_id: string; mentor_name: string; created_at: string; expires_at: string; accepted_at: string | null; accepted_person_id: string | null; revoked_at: string | null };
@@ -30,9 +31,9 @@ const editingId = ref("");
 const shanghaiNow = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Shanghai", year: "numeric", month: "numeric" }).formatToParts().map((part) => [part.type, part.value]));
 const defaultJoinedYear = shanghaiNow.year;
 const defaultJoinedSeason = Number(shanghaiNow.month) >= 9 ? "autumn" : "spring";
-const editForm = ref({ name: "", bio: "", role: "", birthday: "", joinedYear: "", joinedSeason: "autumn" as "spring" | "autumn", isFeatured: false, featuredNote: "", tags: "", cohortYear: "", status: "active", destination: "", mentorId: "", relationScope: "lineage" });
-const memberForm = ref({ name: "", cohortYear: defaultJoinedYear, birthday: "", joinedYear: defaultJoinedYear, joinedSeason: defaultJoinedSeason as "spring" | "autumn", status: "active", destination: "", mentorId: "", relationScope: "lineage" });
-const accountForm = ref({ personId: "", email: "", phone: "", password: "", role: "member" });
+const editForm = ref({ name: "", bio: "", memberType: "formal" as "formal" | "probationary", groupRole: "" as "" | "leader" | "vice_leader", birthday: "", joinedYear: "", joinedSeason: "autumn" as "spring" | "autumn", isFeatured: false, featuredNote: "", tags: "", cohortYear: "", status: "active", destination: "", mentorId: "", relationScope: "lineage" });
+const memberForm = ref({ name: "", memberType: "formal" as "formal" | "probationary", groupRole: "" as "" | "leader" | "vice_leader", cohortYear: defaultJoinedYear, birthday: "", joinedYear: defaultJoinedYear, joinedSeason: defaultJoinedSeason as "spring" | "autumn", status: "active", destination: "", mentorId: "", relationScope: "lineage" });
+const accountForm = ref({ personId: "", email: "", phone: "", password: "" });
 const resetPasswords = ref<Record<string, string>>({});
 
 const tabs: { id: Tab; label: string }[] = [
@@ -49,6 +50,9 @@ const destinationOptions = [
   ["postgraduate_211", "211 研"], ["other", "其他"],
 ];
 const groupRoleText: Record<string, string> = { leader: "组长", vice_leader: "副组长" };
+const adminReasonText: Record<string, string> = { permanent_owner: "永久管理员", active_group_leader: "在读组长/副组长自动管理员" };
+const accountRoleText = (member: Member) => member.account_role === "admin" ? "管理员" : "成员";
+const accountRoleReason = (member: Member) => member.admin_reason ? adminReasonText[member.admin_reason] : "无自动管理员条件";
 const accountlessMembers = computed(() => members.value.filter((member) => !member.account_id));
 const filteredMembers = computed(() => {
   const query = memberQuery.value.trim().toLocaleLowerCase();
@@ -110,14 +114,15 @@ async function createMember() {
     birthday: memberForm.value.birthday || null,
     mentorId: memberForm.value.mentorId || null,
     destination: memberForm.value.destination || null,
+    groupRole: memberForm.value.groupRole || null,
   }) }), "人物已加入星谱", true);
-  if (ok) memberForm.value = { name: "", cohortYear: defaultJoinedYear, birthday: "", joinedYear: defaultJoinedYear, joinedSeason: defaultJoinedSeason, status: "active", destination: "", mentorId: "", relationScope: "lineage" };
+  if (ok) memberForm.value = { name: "", memberType: "formal", groupRole: "", cohortYear: defaultJoinedYear, birthday: "", joinedYear: defaultJoinedYear, joinedSeason: defaultJoinedSeason, status: "active", destination: "", mentorId: "", relationScope: "lineage" };
 }
 
 function editMember(member: Member) {
   editingId.value = member.id;
   editForm.value = {
-    name: member.name, bio: member.bio, role: member.role, birthday: member.birthday ?? "",
+    name: member.name, bio: member.bio, memberType: member.member_type, groupRole: (member.group_role ?? "") as "" | "leader" | "vice_leader", birthday: member.birthday ?? "",
     joinedYear: member.joined_at?.slice(0, 4) ?? "", joinedSeason: (Number(member.joined_at?.slice(5, 7) ?? 9) < 9 ? "spring" : "autumn"),
     isFeatured: Boolean(member.is_featured), featuredNote: member.featured_note ?? "",
     tags: (() => { try { return (JSON.parse(member.tags_json) as string[]).join("、"); } catch { return ""; } })(),
@@ -132,7 +137,8 @@ async function saveMember(member: Member) {
     body: JSON.stringify({
       name: editForm.value.name,
       bio: editForm.value.bio,
-      role: editForm.value.role,
+      memberType: editForm.value.memberType,
+      groupRole: editForm.value.groupRole || null,
       isFeatured: editForm.value.isFeatured,
       featuredNote: editForm.value.featuredNote || null,
       status: editForm.value.status,
@@ -170,13 +176,6 @@ async function deleteMember(member: Member) {
   await mutate(`delete-member-${member.id}`, () => api(`/members/${encodeURIComponent(member.id)}`, { method: "DELETE" }), "人物档案已删除", true);
 }
 
-async function setAccountRole(member: Member, role: "member" | "admin") {
-  if (!member.account_id || member.account_role === role) return;
-  await mutate(`role-${member.account_id}`, () => api(`/accounts/${encodeURIComponent(member.account_id!)}/role`, {
-    method: "PATCH", body: JSON.stringify({ role }),
-  }), role === "admin" ? "已授予管理员权限" : "已改为普通成员");
-}
-
 async function resetPassword(member: Member) {
   if (!member.account_id) return;
   const password = resetPasswords.value[member.account_id] ?? "";
@@ -192,7 +191,7 @@ async function createAccount() {
   if (contactError) { failure.value = contactError; return; }
   const payload = { ...accountForm.value, email: accountForm.value.email.trim(), phone: accountForm.value.phone.trim() };
   const ok = await mutate("account-new", () => api("/accounts", { method: "POST", body: JSON.stringify(payload) }), "账号已创建");
-  if (ok) accountForm.value = { personId: "", email: "", phone: "", password: "", role: "member" };
+  if (ok) accountForm.value = { personId: "", email: "", phone: "", password: "" };
 }
 
 async function revokeInvite(invite: Invite) {
@@ -231,6 +230,8 @@ onMounted(loadAll);
       <form class="admin-form new-member" @submit.prevent="createMember">
         <h2>新增无账号人物</h2>
         <label>姓名<input v-model.trim="memberForm.name" maxlength="100" required /></label>
+        <label>组员身份<select v-model="memberForm.memberType"><option value="formal">正式组员</option><option value="probationary">预备组员</option></select></label>
+        <label>组内职务<select v-model="memberForm.groupRole"><option value="">普通组员</option><option value="leader">组长</option><option value="vice_leader">副组长</option></select></label>
         <label>级别年份<input v-model.trim="memberForm.cohortYear" type="number" min="1900" max="2200" placeholder="例如 2023" /></label>
         <label>生日<input v-model="memberForm.birthday" type="date" /></label>
         <label>进组年份<input v-model.trim="memberForm.joinedYear" type="number" min="1900" max="2200" /></label>
@@ -251,7 +252,8 @@ onMounted(loadAll);
           <template v-if="editingId === member.id">
             <div class="member-grid editing">
               <label>姓名<input v-model.trim="editForm.name" maxlength="100" /></label>
-              <label>身份说明<input v-model.trim="editForm.role" maxlength="160" /></label>
+              <label>组员身份<select v-model="editForm.memberType"><option value="formal">正式组员</option><option value="probationary">预备组员</option></select></label>
+              <label>组内职务<select v-model="editForm.groupRole"><option value="">普通组员</option><option value="leader">组长</option><option value="vice_leader">副组长</option></select></label>
               <label>级别年份<input v-model.trim="editForm.cohortYear" type="number" min="1900" max="2200" placeholder="例如 2023" /></label>
               <label>生日<input v-model="editForm.birthday" type="date" /></label>
               <label>进组年份<input v-model.trim="editForm.joinedYear" type="number" min="1900" max="2200" /></label>
@@ -270,12 +272,11 @@ onMounted(loadAll);
             <div class="member-summary"><strong>{{ member.name }}</strong><span>{{ member.cohort_label ?? "未分级" }} · {{ member.status === "active" ? "在读" : "毕业" }} · {{ member.member_type === "probationary" ? "预备组员" : "正式组员" }}<template v-if="member.group_role"> · {{ groupRoleText[member.group_role] }}</template> · {{ member.mentor_name ? `师从 ${member.mentor_name}` : "无师傅" }}</span></div>
             <div class="account-summary">
               <template v-if="member.account_id">
-                <span>{{ member.email ?? member.phone ?? "未设置登录标识" }} · {{ member.account_role === "admin" ? "管理员" : "成员" }} · {{ member.account_status === "active" ? "已启用" : "已停用" }}</span>
-                <select :value="member.account_role ?? 'member'" aria-label="账号权限" :disabled="saving === `role-${member.account_id}`" @change="setAccountRole(member, ($event.target as HTMLSelectElement).value as 'member' | 'admin')"><option value="member">成员</option><option value="admin">管理员</option></select>
-                <button type="button" :disabled="saving === `account-${member.account_id}`" @click="setAccountStatus(member)">{{ member.account_status === "active" ? "停用" : "启用" }}</button>
-                <button type="button" :disabled="saving === `delete-account-${member.account_id}`" @click="deleteAccount(member)">删除账号</button>
-                <input v-model="resetPasswords[member.account_id]" type="password" minlength="8" maxlength="100" autocomplete="new-password" placeholder="输入新密码" aria-label="新密码" />
-                <button type="button" :disabled="saving === `password-${member.account_id}`" @click="resetPassword(member)">重置密码</button>
+                <span>{{ member.email ?? member.phone ?? "未设置登录标识" }} · {{ accountRoleText(member) }} · {{ accountRoleReason(member) }} · {{ member.account_status === "active" ? "已启用" : "已停用" }}</span>
+                <button type="button" :disabled="member.permanent_admin || saving === `account-${member.account_id}`" :title="member.permanent_admin ? '永久管理员账号受保护' : undefined" @click="setAccountStatus(member)">{{ member.account_status === "active" ? "停用" : "启用" }}</button>
+                <button type="button" :disabled="member.permanent_admin || saving === `delete-account-${member.account_id}`" :title="member.permanent_admin ? '永久管理员账号受保护' : undefined" @click="deleteAccount(member)">删除账号</button>
+                <input v-model="resetPasswords[member.account_id]" type="password" minlength="8" maxlength="100" autocomplete="new-password" placeholder="输入新密码" aria-label="新密码" :disabled="member.permanent_admin" />
+                <button type="button" :disabled="member.permanent_admin || saving === `password-${member.account_id}`" :title="member.permanent_admin ? '永久管理员账号受保护' : undefined" @click="resetPassword(member)">重置密码</button>
               </template>
               <template v-else>
                 <span>尚未绑定账号</span>
@@ -293,7 +294,6 @@ onMounted(loadAll);
         <label>邮箱（邮箱或手机号至少填写一项）<input v-model.trim="accountForm.email" type="email" maxlength="254" /></label>
         <label>手机号（可选）<input v-model.trim="accountForm.phone" type="tel" maxlength="30" autocomplete="tel" /></label>
         <label>初始密码<input v-model="accountForm.password" type="password" required minlength="8" maxlength="100" autocomplete="new-password" /></label>
-        <label>权限<select v-model="accountForm.role"><option value="member">成员</option><option value="admin">管理员</option></select></label>
         <button class="primary-button" type="submit" :disabled="saving === 'account-new'">建立账号</button>
       </form>
     </template>
@@ -344,7 +344,7 @@ button { border: 1px solid var(--line); border-radius: 6px; background: rgba(145
 .member-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
 .member-grid .wide-field { grid-column: span 2; }
 .row-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
-.account-form { grid-template-columns: 2fr 2fr 2fr 1fr auto; margin-top: 24px; }
+.account-form { grid-template-columns: 2fr 2fr 2fr 2fr auto; margin-top: 24px; }
 .cohort-new { grid-template-columns: 2fr 1fr 1fr 3fr auto; }
 .cohort-new .wide { min-width: 0; }
 .cohort-row { display: grid; grid-template-columns: 1.4fr .6fr .5fr 2fr auto auto auto; align-items: center; gap: 8px; }

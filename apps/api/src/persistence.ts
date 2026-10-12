@@ -1,5 +1,6 @@
 import type { Cohort, Person, TreeNode } from "./types.ts";
 import { cohortOrderValid, joinSeasonAt, joinSeasonFromDate, joinedAtFromSeason, type JoinSeason } from "../../../packages/shared/src/domain.ts";
+import { effectiveAdminPolicy } from "../../../packages/shared/src/admin-policy.ts";
 import { parseAccountIdentifier } from "../../../packages/shared/src/account-identifiers.ts";
 import { analyzeLineage } from "./lib/lineage.ts";
 import {
@@ -72,6 +73,9 @@ type AccountRow = {
   password_salt: string;
   password_hash: string;
   must_change_password: number;
+  person_status: "active" | "archived";
+  cohort_year: number | null;
+  group_role: Person["groupRole"];
 };
 
 type SessionRow = AccountRow & { expires_at: string };
@@ -285,14 +289,22 @@ function toSummary(record: StoredPerson) {
   };
 }
 
-function publicUser(row: AccountRow): SessionUser {
+function publicUser(row: AccountRow, at = new Date()): SessionUser {
+  const policy = effectiveAdminPolicy({
+    email: row.email,
+    personStatus: row.person_status,
+    cohortYear: row.cohort_year,
+    groupRole: row.group_role,
+  }, at);
   return {
     id: row.id,
     email: row.email,
     phone: row.phone,
     displayName: row.display_name,
     personId: row.person_id,
-    role: row.role,
+    role: policy.role,
+    permanentAdmin: policy.permanentAdmin,
+    adminReason: policy.adminReason,
     mustChangePassword: Boolean(row.must_change_password),
   };
 }
@@ -575,7 +587,7 @@ export class D1Persistence {
     const expiresAt = new Date(now + SESSION_TTL_MS).toISOString();
     await this.db.prepare("INSERT INTO auth_sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)")
       .bind(tokenHash, account.id, expiresAt).run();
-    return { token, expiresAt, user: publicUser(account) } satisfies Session;
+    return { token, expiresAt, user: publicUser(account, new Date(now)) } satisfies Session;
   }
 
   async login(identifier: string, password: string, now = Date.now()): Promise<LoginResult> {
@@ -594,8 +606,10 @@ export class D1Persistence {
     const lookup = kind === "email" ? "lower(u.email) = ?" : "u.phone = ?";
     const matches = await this.db.prepare(`
       SELECT u.id, u.email, u.phone, u.display_name, u.person_id, u.role,
-        u.password_salt, u.password_hash, u.must_change_password
+        u.password_salt, u.password_hash, u.must_change_password, p.status AS person_status,
+        COALESCE(p.cohort_year, c.year) AS cohort_year, p.group_role
       FROM users u JOIN people p ON p.id = u.person_id
+      LEFT JOIN cohorts c ON c.id = p.cohort_id
       WHERE ${lookup} AND u.status = 'active'
       ORDER BY u.created_at, u.id
       LIMIT 2
@@ -690,8 +704,11 @@ export class D1Persistence {
       password_salt: credentials.passwordSalt,
       password_hash: credentials.passwordHash,
       must_change_password: 0,
+      person_status: "active",
+      cohort_year: year,
+      group_role: null,
     };
-    return { token: sessionToken, expiresAt, user: publicUser(account) } satisfies Session;
+    return { token: sessionToken, expiresAt, user: publicUser(account, new Date(now)) } satisfies Session;
   }
 
   async registerAccount(displayName: string, email: string, password: string, personId: string, now = Date.now()) {
@@ -704,8 +721,10 @@ export class D1Persistence {
     const tokenHash = await hashToken(token);
     const row = await this.db.prepare(`
       SELECT u.id, u.email, u.phone, u.display_name, u.person_id, u.role,
-        u.password_salt, u.password_hash, u.must_change_password, s.expires_at
+        u.password_salt, u.password_hash, u.must_change_password, s.expires_at,
+        p.status AS person_status, COALESCE(p.cohort_year, c.year) AS cohort_year, p.group_role
       FROM auth_sessions s JOIN users u ON u.id = s.user_id
+      JOIN people p ON p.id = u.person_id LEFT JOIN cohorts c ON c.id = p.cohort_id
       WHERE s.token_hash = ? AND u.status = 'active'
     `).bind(tokenHash).first<SessionRow>();
     if (!row) return null;
@@ -713,7 +732,7 @@ export class D1Persistence {
       await this.db.prepare("DELETE FROM auth_sessions WHERE token_hash = ?").bind(tokenHash).run();
       return null;
     }
-    return { token, expiresAt: row.expires_at, user: publicUser(row) } satisfies Session;
+    return { token, expiresAt: row.expires_at, user: publicUser(row, new Date(now)) } satisfies Session;
   }
 
   async deleteSession(authorization: string | undefined) {
@@ -1113,9 +1132,12 @@ export class D1Persistence {
     const account: AccountRow = {
       id: accountId, email, phone, display_name: displayName, person_id: inspected.claim.personId,
       role: "member", password_salt: credentials.passwordSalt, password_hash: credentials.passwordHash, must_change_password: 0,
+      person_status: inspected.person.status,
+      cohort_year: inspected.person.cohortYear,
+      group_role: inspected.person.groupRole,
     };
     const profile = await this.personDetail(inspected.claim.personId);
-    return { state: "claimed-now", claim: { ...inspected.claim, claimedAt }, person: profile, session: { token: sessionToken, expiresAt, user: publicUser(account) } satisfies Session } as const;
+    return { state: "claimed-now", claim: { ...inspected.claim, claimedAt }, person: profile, session: { token: sessionToken, expiresAt, user: publicUser(account, new Date(now)) } satisfies Session } as const;
   }
 
   async inspectInvite(token: string, now = Date.now()): Promise<InviteInspection> {

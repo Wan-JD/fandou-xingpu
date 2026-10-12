@@ -52,3 +52,15 @@ pnpm dev
 受保护接口读取 `Authorization: Bearer <token>`；前端将明文 token 保存在本地会话存储中，D1 只保存 SHA-256 hash。当前实现没有 Cookie 或 CSRF 机制，因此正式站必须使用 HTTPS，并用精确 `ALLOWED_ORIGIN` 限制跨域来源。
 
 远程部署使用独立的生产配置和真实 Cloudflare D1/R2 绑定，步骤见 [deployment.md](./deployment.md)。仓库不包含真实账号、密码、密钥、token 或数据库副本。
+
+# 管理员权限
+
+管理员权限由账号绑定的人物资料实时派生，不以 `users.role` 作为授权依据。每次登录和每次校验已有会话都会重新计算，所以修改职务、归档毕业或跨过学年边界会立即影响现有令牌。
+
+- 邮箱规范化后为 `wanjundi0512@163.com` 的既有账号是永久管理员。判断只使用账号邮箱，不使用姓名；不会为同名人物或无账号人物创建账号。
+- 其他账号仅在人物状态为 `active`、职务为组长或副组长、且级别处于上海时区当前学年的大一至大四范围时获得管理员权限。
+- 未知级别、未来级别、已归档人物，以及已经越过四年学制的历史级别均为普通成员。学年在上海时间每年 9 月切换。
+- 永久管理员账号不能被其他管理员删除、停用、降权或重置密码。
+- `PATCH /api/admin/accounts/:id/role` 保留为兼容路由：永久管理员返回 `409 PERMANENT_ADMIN_PROTECTED`，其他已有账号返回 `409 ROLE_MANAGED_AUTOMATICALLY`。创建账号也不会接受手工管理员授权。
+
+`GET /api/admin/members` 中的 `account_role` 是实时有效角色，并附带 `permanent_admin` 与 `admin_reason`。后者取值为 `permanent_owner`、`active_group_leader` 或 `null`。

@@ -1,6 +1,7 @@
 export * from "./types.ts";
 export * from "./domain.ts";
 export * from "./account-identifiers.ts";
+export * from "./admin-policy.ts";
 export {
   idSchema,
   relationScopeSchema,
