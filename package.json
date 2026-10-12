@@ -21,7 +21,7 @@
     "test:integration:isolated": "node scripts/verify-isolated.mjs",
     "build": "pnpm --dir packages/shared typecheck && pnpm --dir apps/web build && pnpm --dir apps/api build",
     "build:api": "pnpm --dir apps/api build",
-    "test:contracts": "node --experimental-strip-types --test tests/contract.test.mjs tests/lineage.test.mjs tests/account.test.mjs tests/invite.test.mjs tests/academic-year.test.mjs tests/profile-domain.test.mjs"
+    "test:contracts": "node --experimental-strip-types --test tests/contract.test.mjs tests/lineage.test.mjs tests/account.test.mjs tests/invite.test.mjs tests/academic-year.test.mjs tests/profile-domain.test.mjs tests/constellation.test.mjs"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
