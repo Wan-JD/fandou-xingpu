@@ -3,7 +3,7 @@
 import { onUnmounted, ref, watch } from "vue";
 import { authHeaders } from "../lib/api";
 
-const props = defineProps<{ src: string; alt: string; token?: string | null; isPublic?: boolean }>();
+const props = withDefaults(defineProps<{ src: string; alt: string; token?: string | null; isPublic?: boolean; fit?: "cover" | "contain" }>(), { fit: "cover" });
 const emit = defineEmits<{ loaded: [url: string] }>();
 const objectUrl = ref("");
 const failed = ref(false);
@@ -35,13 +35,18 @@ async function load() {
   }
 }
 
+function onPublicLoad(event: Event) {
+  failed.value = false;
+  emit("loaded", (event.currentTarget as HTMLImageElement).currentSrc || props.src);
+}
+
 watch(() => [props.src, props.token, props.isPublic], load, { immediate: true });
 onUnmounted(() => { requestId += 1; release(); });
 </script>
 
 <template>
-  <img v-if="isPublic" class="auth-image" :src="src" :alt="alt" loading="lazy" decoding="async" @error="failed = true" />
-  <img v-else-if="objectUrl" class="auth-image" :src="objectUrl" :alt="alt" decoding="async" />
+  <img v-if="isPublic && !failed" class="auth-image" :src="src" :alt="alt" :style="{ objectFit: fit }" loading="lazy" decoding="async" @load="onPublicLoad" @error="failed = true" />
+  <img v-else-if="objectUrl" class="auth-image" :src="objectUrl" :alt="alt" :style="{ objectFit: fit }" decoding="async" />
   <span v-else class="auth-image auth-image-placeholder" :class="{ failed, loading }" role="img" :aria-label="failed ? `${alt}暂时无法读取` : `${alt}加载中`">
     <svg v-if="failed" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4z" /><path d="m4 15 4-4 4 4 3-3 5 5" /><path d="m3 3 18 18" /></svg>
   </span>

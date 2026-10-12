@@ -5,7 +5,7 @@ import AuthImage from "../AuthImage.vue";
 import StarAvatar from "../StarAvatar.vue";
 import { ApiError, apiRequest } from "../../lib/api";
 import { fileSize, occurredLabel } from "../../lib/format";
-import { coverThemes, destinationLabels, groupRoleLabels, type Achievement, type Attachment, type CoverTheme, type Destination, type GroupRole, type MembershipType, type Person, type Tone, type UploadCategory } from "../../lib/people";
+import { coverThemes, destinationLabels, type Achievement, type Attachment, type CoverTheme, type Destination, type Person, type Tone, type UploadCategory } from "../../lib/people";
 
 type Section = "basic" | "story" | "skills" | "files" | "records";
 const props = defineProps<{ person: Person; token: string; tone: Tone; initialSection?: Section }>();
@@ -24,8 +24,9 @@ const initial = () => ({
   bio: props.person.bio ?? "",
   coverTheme: (props.person.coverTheme ?? "nebula") as CoverTheme,
   destination: (props.person.destination ?? "") as Destination | "",
-  memberType: (props.person.memberType ?? "") as MembershipType | "",
-  groupRole: (props.person.groupRole ?? "") as GroupRole | "",
+  birthday: props.person.birthday ?? "",
+  joinedYear: props.person.joinedYear ? String(props.person.joinedYear) : props.person.joinedAt?.slice(0, 4) ?? "",
+  joinedSeason: props.person.joinedSeason ?? (props.person.joinedAt?.slice(5, 7) && Number(props.person.joinedAt.slice(5, 7)) < 9 ? "spring" : "autumn"),
   contactEmail: props.person.contactEmail ?? "",
   education: props.person.education ?? "",
   experience: props.person.experience ?? "",
@@ -80,6 +81,8 @@ async function saveProfile() {
   try {
     const links = form.value.links.map((link) => ({ label: link.label.trim(), url: link.url.trim() })).filter((link) => link.label || link.url);
     if (links.some((link) => !link.label || !/^https?:\/\/\S+$/i.test(link.url))) throw new Error("链接需要填写名称，并以 http:// 或 https:// 开头");
+    const joinedYear = form.value.joinedYear ? Number(form.value.joinedYear) : null;
+    if (joinedYear !== null && (!Number.isInteger(joinedYear) || joinedYear < 1900 || joinedYear > 2200)) throw new Error("进组年份需要填写 1900 至 2200 之间的年份");
     const data = await apiRequest<Record<string, unknown>>("/api/me/profile", {
       token: props.token, method: "PATCH", fallback: "资料保存失败",
       json: {
@@ -88,8 +91,8 @@ async function saveProfile() {
         bio: form.value.bio.trim(),
         coverTheme: form.value.coverTheme,
         destination: form.value.destination || null,
-        memberType: form.value.memberType || null,
-        groupRole: form.value.groupRole || null,
+        birthday: form.value.birthday || null,
+        ...(joinedYear === null ? {} : { joinedYear, joinedSeason: form.value.joinedSeason }),
         contactEmail: form.value.contactEmail.trim() || null,
         education: form.value.education.trim() || null,
         experience: form.value.experience.trim() || null,
@@ -274,9 +277,10 @@ onUnmounted(() => {
           </fieldset>
           <div class="field-grid">
             <label class="form-field"><span>去向</span><select v-model="form.destination"><option value="">暂未填写</option><option v-for="(label, value) in destinationLabels" :key="value" :value="value">{{ label }}</option></select></label>
-            <label class="form-field"><span>组员身份</span><select v-model="form.memberType"><option value="">暂未标记</option><option value="formal">正式组员</option><option value="probationary">预备组员</option></select></label>
-            <label class="form-field"><span>组内职务</span><select v-model="form.groupRole"><option value="">无</option><option v-for="(label, value) in groupRoleLabels" :key="value" :value="value">{{ label }}</option></select></label>
+            <label class="form-field"><span>生日</span><input v-model="form.birthday" type="date" min="1900-01-01" max="2200-12-31" /></label>
+            <div class="form-field join-field"><span>进组时间</span><div><input v-model.trim="form.joinedYear" type="number" inputmode="numeric" min="1900" max="2200" step="1" placeholder="年份" aria-label="进组年份" /><select v-model="form.joinedSeason" aria-label="进组季节"><option value="spring">春季</option><option value="autumn">秋季</option></select></div></div>
           </div>
+          <p class="editor-note">组员身份由师傅设置，组内职务由师傅或上一届正副组长设置。</p>
           <label class="form-field"><span>联系邮箱（所有访客可见）</span><input v-model="form.contactEmail" type="email" maxlength="254" placeholder="可留空" /></label>
         </section>
 
@@ -406,6 +410,7 @@ onUnmounted(() => {
 .field-count { justify-self: end; margin-top: -2px; color: var(--muted); font-size: 11px; }
 .field-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
 .field-grid.two { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); }
+.join-field > div { display: grid; grid-template-columns: minmax(0, 1fr) 92px; gap: 8px; }
 .theme-field { margin: 0; padding: 0; border: 0; }
 .theme-field legend { margin-bottom: 8px; color: var(--ink-soft); font-size: 11px; letter-spacing: .14em; }
 .theme-options { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }

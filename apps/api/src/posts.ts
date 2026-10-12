@@ -1,11 +1,13 @@
 import { Hono } from "hono";
-import { POST_IMAGE_LIMIT, postInputSchema, postUpdateSchema } from "../../../packages/shared/src/schemas.ts";
+import { POST_IMAGE_LIMITS, postInputSchema, postUpdateSchema } from "../../../packages/shared/src/schemas.ts";
+import type { PostKind } from "../../../packages/shared/src/types.ts";
 import { persistence, type ContentViewer } from "./persistence.ts";
 import type { Env } from "./types.ts";
 
 // 动态只出现在作者本人的主页；公开动态匿名可读，成员动态需要登录。
 type PostRow = {
   id: string; personId: string; title: string | null; content: string; visibility: "public" | "members";
+  kind: PostKind;
   isPinned: number; version: number; createdAt: string; updatedAt: string; likeCount: number; liked: number;
 };
 
@@ -35,6 +37,7 @@ export class PostStore {
       title: row.title,
       content: row.content,
       visibility: row.visibility,
+      kind: row.kind,
       isPinned: Boolean(row.isPinned),
       images: images.results.filter((image) => image.postId === row.id).map((image) => ({ id: image.id, url: `/api/attachments/${image.id}` })),
       likeCount: Number(row.likeCount ?? 0),
@@ -46,7 +49,7 @@ export class PostStore {
   }
 
   private select(where: string) {
-    return `SELECT p.id, p.person_id AS personId, p.title, p.content, p.visibility, p.is_pinned AS isPinned, p.version,
+    return `SELECT p.id, p.person_id AS personId, p.title, p.content, p.visibility, p.kind, p.is_pinned AS isPinned, p.version,
         p.created_at AS createdAt, p.updated_at AS updatedAt,
         (SELECT COUNT(*) FROM post_likes l WHERE l.post_id = p.id) AS likeCount,
         (SELECT COUNT(*) FROM post_likes l WHERE l.post_id = p.id AND l.user_id = ?) AS liked
@@ -90,11 +93,11 @@ export class PostStore {
     }
   }
 
-  async create(personId: string, input: { title?: string | null; content: string; visibility: "public" | "members" }, files: File[], bucket: R2Bucket | undefined) {
+  async create(personId: string, input: { kind: PostKind; title?: string | null; content: string; visibility: "public" | "members" }, files: File[], bucket: R2Bucket | undefined) {
     const id = `post-${crypto.randomUUID()}`;
     const now = new Date().toISOString();
-    await this.db.prepare(`INSERT INTO posts (id, person_id, title, content, visibility, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-      .bind(id, personId, input.title?.trim() || null, input.content, input.visibility, now, now).run();
+    await this.db.prepare(`INSERT INTO posts (id, person_id, title, content, visibility, kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(id, personId, input.title?.trim() || null, input.content, input.visibility, input.kind, now, now).run();
     if (files.length && bucket) {
       try {
         await this.storeImages(personId, id, files, bucket);
@@ -106,10 +109,11 @@ export class PostStore {
     return this.get(id);
   }
 
-  async update(personId: string, id: string, input: { version: number; title?: string | null; content?: string; visibility?: "public" | "members"; isPinned?: boolean }) {
+  async update(personId: string, id: string, input: { version: number; kind?: PostKind; title?: string | null; content?: string; visibility?: "public" | "members"; isPinned?: boolean }) {
     const assignments: string[] = [];
     const values: unknown[] = [];
     if ("title" in input) { assignments.push("title = ?"); values.push(input.title?.trim() || null); }
+    if (input.kind !== undefined) { assignments.push("kind = ?"); values.push(input.kind); }
     if (input.content !== undefined) { assignments.push("content = ?"); values.push(input.content); }
     if (input.visibility !== undefined) { assignments.push("visibility = ?"); values.push(input.visibility); }
     if (input.isPinned !== undefined) { assignments.push("is_pinned = ?"); values.push(input.isPinned ? 1 : 0); }
@@ -120,7 +124,10 @@ export class PostStore {
       this.db.prepare(`UPDATE posts SET ${assignments.join(", ")} WHERE id = ? AND person_id = ? AND version = ?`).bind(...values, id, personId, input.version),
     ];
     // 置顶是唯一的：置顶一条动态会取消同一主页上的其它置顶。
-    if (input.isPinned) statements.unshift(this.db.prepare("UPDATE posts SET is_pinned = 0 WHERE person_id = ? AND id <> ? AND is_pinned = 1").bind(personId, id));
+    if (input.isPinned) statements.unshift(this.db.prepare(`UPDATE posts SET is_pinned = 0
+      WHERE person_id = ? AND id <> ? AND is_pinned = 1
+        AND EXISTS (SELECT 1 FROM posts target WHERE target.id = ? AND target.person_id = ? AND target.version = ?)`)
+      .bind(personId, id, id, personId, input.version));
     const results = await this.db.batch(statements);
     if ((results[results.length - 1]?.meta.changes ?? 0) === 0) return null;
     return this.get(id);
@@ -139,7 +146,7 @@ export class PostStore {
   }
 
   async owned(personId: string, id: string) {
-    return this.db.prepare("SELECT id, version FROM posts WHERE id = ? AND person_id = ?").bind(id, personId).first<{ id: string; version: number }>();
+    return this.db.prepare("SELECT id, version, kind, content FROM posts WHERE id = ? AND person_id = ?").bind(id, personId).first<{ id: string; version: number; kind: PostKind; content: string }>();
   }
 
   async imageCount(id: string) {
@@ -181,8 +188,9 @@ function imageFiles(value: unknown) {
   return list.filter((item): item is File => item instanceof File && item.size > 0);
 }
 
-function imageProblem(files: File[], existing = 0) {
-  if (files.length + existing > POST_IMAGE_LIMIT) return error(400, "TOO_MANY_IMAGES", `每条动态最多 ${POST_IMAGE_LIMIT} 张图片`);
+function imageProblem(files: File[], kind: PostKind, existing = 0) {
+  const limit = POST_IMAGE_LIMITS[kind];
+  if (files.length + existing > limit) return error(400, "TOO_MANY_IMAGES", `${kind === "experience" ? "经验分享" : "随手记"}最多 ${limit} 张图片`);
   if (files.some((file) => !IMAGE_TYPES.has(file.type))) return error(415, "UNSUPPORTED_MEDIA_TYPE", "动态图片仅支持 JPG、PNG 或 WebP");
   if (files.some((file) => file.size > IMAGE_MAX_BYTES)) return error(413, "FILE_TOO_LARGE", "单张图片不能超过 5 MB");
   return null;
@@ -212,13 +220,14 @@ myPostsApi.post("/", async (c) => {
   const form = await c.req.parseBody({ all: true }).catch(() => null);
   if (!form) return error(400, "VALIDATION_ERROR", "动态内容无效");
   const parsed = postInputSchema.safeParse({
+    kind: typeof form.kind === "string" ? form.kind : undefined,
     title: typeof form.title === "string" ? form.title : undefined,
     content: typeof form.content === "string" ? form.content : "",
     visibility: typeof form.visibility === "string" ? form.visibility : undefined,
   });
-  if (!parsed.success) return error(400, "VALIDATION_ERROR", "请填写动态内容，正文不超过 10000 字");
+  if (!parsed.success) return error(400, "VALIDATION_ERROR", "请检查动态类型和正文长度（随手记最多 10000 字，经验分享最多 100000 字）");
   const files = imageFiles(form.images);
-  const problem = imageProblem(files);
+  const problem = imageProblem(files, parsed.data.kind);
   if (problem) return problem;
   if (files.length && !c.env.FILES) return error(503, "R2_REQUIRED", "图片存储尚未配置");
   const post = await new PostStore(c.env.DB!).create(session.user.personId, parsed.data, files, c.env.FILES);
@@ -230,7 +239,14 @@ myPostsApi.patch("/:id", async (c) => {
   if (!session) return error(401, "UNAUTHENTICATED", "请先登录");
   const parsed = postUpdateSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return error(400, "VALIDATION_ERROR", "动态内容无效");
-  const post = await new PostStore(c.env.DB!).update(session.user.personId, c.req.param("id"), parsed.data);
+  const store = new PostStore(c.env.DB!);
+  const existing = await store.owned(session.user.personId, c.req.param("id"));
+  if (!existing) return error(404, "POST_NOT_FOUND", "动态不存在");
+  const effectiveKind = parsed.data.kind ?? existing.kind;
+  const effectiveContent = parsed.data.content ?? existing.content;
+  if (effectiveKind === "note" && effectiveContent.length > 10_000) return error(400, "VALIDATION_ERROR", "随手记正文不能超过 10000 字");
+  if (await store.imageCount(existing.id) > POST_IMAGE_LIMITS[effectiveKind]) return error(400, "TOO_MANY_IMAGES", `切换为随手记前请将图片减少到 ${POST_IMAGE_LIMITS[effectiveKind]} 张以内`);
+  const post = await store.update(session.user.personId, c.req.param("id"), parsed.data);
   if (!post) return error(409, "VERSION_CONFLICT", "动态不存在或已被更新，请刷新后重试");
   return c.json({ data: post });
 });
@@ -248,11 +264,12 @@ myPostsApi.post("/:id/images", async (c) => {
   if (!c.env.FILES) return error(503, "R2_REQUIRED", "图片存储尚未配置");
   const store = new PostStore(c.env.DB!);
   const id = c.req.param("id");
-  if (!await store.owned(session.user.personId, id)) return error(404, "POST_NOT_FOUND", "动态不存在");
+  const post = await store.owned(session.user.personId, id);
+  if (!post) return error(404, "POST_NOT_FOUND", "动态不存在");
   const form = await c.req.parseBody({ all: true }).catch(() => null);
   const files = imageFiles(form?.images);
   if (!files.length) return error(400, "FILE_REQUIRED", "请选择图片");
-  const problem = imageProblem(files, await store.imageCount(id));
+  const problem = imageProblem(files, post.kind, await store.imageCount(id));
   if (problem) return problem;
   return c.json({ data: await store.addImages(session.user.personId, id, files, c.env.FILES) }, 201);
 });

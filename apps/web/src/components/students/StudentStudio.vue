@@ -3,13 +3,15 @@
 import { computed, onMounted, ref } from "vue";
 import StarAvatar from "../StarAvatar.vue";
 import { ApiError, apiRequest, copyText } from "../../lib/api";
-import { fullTime, relativeTime } from "../../lib/format";
+import { fullTime, joinedSeasonLabel, relativeTime } from "../../lib/format";
 import { destinationLabels, formatCohort, groupRoleLabels, membershipLabels, toneFor, type Destination, type GroupRole, type MembershipType, type Person, type SessionUser, type Status, type Tone } from "../../lib/people";
+import { joinSeasonAt, type JoinSeason } from "@fandou-xingpu/shared";
 
 type Account = { identifier: string; status: "active" | "disabled"; activated: boolean; mustChangePassword: boolean; canResetPassword: boolean };
 type Student = {
   personId: string; name: string; memberType: MembershipType; status: Status; groupRole: GroupRole | null; destination: Destination | null;
   version: number; cohort: { id: string; label: string; year: number } | null; avatarUrl: string | null; studentCount: number;
+  birthday: string | null; joinedYear: number | null; joinedSeason: JoinSeason | null;
   createdAt: string; joinedAt: string; account: Account | null; claim: { state: "pending" | "expired" | "claimed"; expiresAt: string } | null;
 };
 type Invite = { id: string; createdAt: string; expiresAt: string; acceptedAt: string | null; revokedAt: string | null; acceptedPerson: { id: string; name: string } | null; state: "pending" | "accepted" | "expired" | "revoked" };
@@ -33,10 +35,11 @@ const inviteCopied = ref(false);
 const credentials = ref<Credentials | null>(null);
 const credentialCopied = ref("");
 const createOpen = ref(false);
-const createForm = ref({ name: "", loginIdentifier: "", cohortYear: "", memberType: "probationary" as MembershipType, groupRole: "" as GroupRole | "" });
+const currentJoin = joinSeasonAt();
+const createForm = ref({ name: "", loginIdentifier: "", cohortYear: "", birthday: "", joinedYear: String(currentJoin.joinedYear), joinedSeason: currentJoin.joinedSeason, memberType: "probationary" as MembershipType, groupRole: "" as GroupRole | "" });
 const createError = ref("");
 const editTarget = ref<Student | null>(null);
-const editForm = ref({ name: "", cohortYear: "", memberType: "probationary" as MembershipType, groupRole: "" as GroupRole | "", status: "active" as Status });
+const editForm = ref({ name: "", cohortYear: "", birthday: "", joinedYear: "", joinedSeason: "autumn" as JoinSeason, memberType: "probationary" as MembershipType, groupRole: "" as GroupRole | "", status: "active" as Status });
 const editError = ref("");
 
 const me = computed(() => props.people.find((person) => person.id === props.sessionUser.personId) ?? null);
@@ -147,7 +150,7 @@ function revokeInvite(invite: Invite) {
 
 function openCreate() {
   createError.value = "";
-  createForm.value = { name: "", loginIdentifier: "", cohortYear: String((me.value?.cohort?.year ?? new Date().getFullYear()) + 1), memberType: "probationary", groupRole: "" };
+  createForm.value = { name: "", loginIdentifier: "", cohortYear: String((me.value?.cohort?.year ?? currentJoin.joinedYear) + 1), birthday: "", joinedYear: String(currentJoin.joinedYear), joinedSeason: currentJoin.joinedSeason, memberType: "probationary", groupRole: "" };
   createOpen.value = true;
 }
 async function submitCreate() {
@@ -157,7 +160,13 @@ async function submitCreate() {
   try {
     const data = await apiRequest<{ person: { id: string; version: number }; claimPath: string; loginIdentifier: string; temporaryPassword: string }>("/api/me/placeholder-students", {
       token: props.sessionToken, fallback: "徒弟账号暂时无法建立",
-      json: { name: createForm.value.name.trim(), loginIdentifier: createForm.value.loginIdentifier.trim() || null, cohortYear: createForm.value.cohortYear ? Number(createForm.value.cohortYear) : null, memberType: createForm.value.memberType },
+      json: {
+        name: createForm.value.name.trim(), loginIdentifier: createForm.value.loginIdentifier.trim() || null,
+        cohortYear: createForm.value.cohortYear ? Number(createForm.value.cohortYear) : null,
+        birthday: createForm.value.birthday || null,
+        joinedYear: Number(createForm.value.joinedYear), joinedSeason: createForm.value.joinedSeason,
+        memberType: createForm.value.memberType,
+      },
     });
     if (createForm.value.groupRole && data.person?.id) {
       await apiRequest(`/api/me/placeholder-students/${encodeURIComponent(data.person.id)}`, { token: props.sessionToken, method: "PATCH", json: { version: data.person.version ?? 1, groupRole: createForm.value.groupRole } }).catch(() => undefined);
@@ -177,7 +186,12 @@ async function submitCreate() {
 function openEdit(student: Student) {
   editError.value = "";
   editTarget.value = student;
-  editForm.value = { name: student.name, cohortYear: student.cohort?.year ? String(student.cohort.year) : "", memberType: student.memberType, groupRole: student.groupRole ?? "", status: student.status };
+  editForm.value = {
+    name: student.name, cohortYear: student.cohort?.year ? String(student.cohort.year) : "", birthday: student.birthday ?? "",
+    joinedYear: String(student.joinedYear ?? student.joinedAt.slice(0, 4) ?? ""),
+    joinedSeason: student.joinedSeason ?? (Number(student.joinedAt.slice(5, 7)) < 9 ? "spring" : "autumn"),
+    memberType: student.memberType, groupRole: student.groupRole ?? "", status: student.status,
+  };
 }
 async function submitEdit() {
   const target = editTarget.value;
@@ -187,7 +201,13 @@ async function submitEdit() {
   try {
     await apiRequest(`/api/me/placeholder-students/${encodeURIComponent(target.personId)}`, {
       token: props.sessionToken, method: "PATCH", fallback: "徒弟资料保存失败",
-      json: { version: target.version, name: editForm.value.name.trim(), cohortYear: editForm.value.cohortYear ? Number(editForm.value.cohortYear) : null, memberType: editForm.value.memberType, groupRole: editForm.value.groupRole || null, status: editForm.value.status },
+      json: {
+        version: target.version, name: editForm.value.name.trim(),
+        cohortYear: editForm.value.cohortYear ? Number(editForm.value.cohortYear) : null,
+        birthday: editForm.value.birthday || null,
+        joinedYear: Number(editForm.value.joinedYear), joinedSeason: editForm.value.joinedSeason,
+        memberType: editForm.value.memberType, groupRole: editForm.value.groupRole || null, status: editForm.value.status,
+      },
     });
     editTarget.value = null;
     notice.value = `${editForm.value.name.trim()} 的资料已更新`;
@@ -308,7 +328,7 @@ onMounted(load);
               </button>
               <div class="student-title">
                 <h3><button type="button" @click="visit(student, $event)">{{ student.name }}</button></h3>
-                <p>{{ formatCohort(student.cohort) }} · 加入于 {{ student.joinedAt }}</p>
+                <p>{{ formatCohort(student.cohort) }} · 进组于 {{ joinedSeasonLabel(student.joinedAt) }}</p>
               </div>
               <span class="status-pill" :class="student.status">{{ student.status === "archived" ? "已毕业" : "在读" }}</span>
             </header>
@@ -386,6 +406,9 @@ onMounted(load);
           <label class="form-field"><span>登录标识（可选）</span><input v-model.trim="createForm.loginIdentifier" maxlength="254" placeholder="邮箱或手机号；留空则用姓名登录" autocomplete="off" /></label>
           <div class="dialog-row">
             <label class="form-field"><span>级别年份</span><input v-model.trim="createForm.cohortYear" type="number" min="1900" max="2200" /></label>
+            <label class="form-field"><span>生日</span><input v-model="createForm.birthday" type="date" /></label>
+            <label class="form-field"><span>进组年份</span><input v-model.trim="createForm.joinedYear" type="number" min="1900" max="2200" required /></label>
+            <label class="form-field"><span>进组季节</span><select v-model="createForm.joinedSeason"><option value="spring">春季</option><option value="autumn">秋季</option></select></label>
             <label class="form-field"><span>组员身份</span><select v-model="createForm.memberType"><option value="probationary">预备组员</option><option value="formal">正式组员</option></select></label>
             <label class="form-field"><span>组内职务</span><select v-model="createForm.groupRole"><option value="">无</option><option value="leader">组长</option><option value="vice_leader">副组长</option></select></label>
           </div>
@@ -407,6 +430,9 @@ onMounted(load);
           <label class="form-field"><span>姓名</span><input v-model.trim="editForm.name" maxlength="100" required /></label>
           <div class="dialog-row">
             <label class="form-field"><span>级别年份</span><input v-model.trim="editForm.cohortYear" type="number" min="1900" max="2200" /></label>
+            <label class="form-field"><span>生日</span><input v-model="editForm.birthday" type="date" /></label>
+            <label class="form-field"><span>进组年份</span><input v-model.trim="editForm.joinedYear" type="number" min="1900" max="2200" required /></label>
+            <label class="form-field"><span>进组季节</span><select v-model="editForm.joinedSeason"><option value="spring">春季</option><option value="autumn">秋季</option></select></label>
             <label class="form-field"><span>组员身份</span><select v-model="editForm.memberType"><option value="probationary">预备组员</option><option value="formal">正式组员</option></select></label>
           </div>
           <div class="dialog-row">

@@ -1,14 +1,17 @@
 <script setup lang="ts">
 // A member's personal starfield: blog-style home with posts, story, gallery and lineage.
 import { computed, onUnmounted, ref, watch } from "vue";
+import { formatJoinedSeason, zodiacForBirthday } from "@fandou-xingpu/shared";
 import AuthImage from "../AuthImage.vue";
 import ImageLightbox, { type LightboxImage } from "../ImageLightbox.vue";
 import StarAvatar from "../StarAvatar.vue";
 import PostCard from "./PostCard.vue";
 import PostComposer from "./PostComposer.vue";
+import MembershipEditor from "./MembershipEditor.vue";
 import ProfileEditor from "./ProfileEditor.vue";
+import ZodiacConstellation from "./ZodiacConstellation.vue";
 import { ApiError, apiRequest, authHeaders, copyText, openProtectedFile } from "../../lib/api";
-import { fileSize, linkify, occurredLabel, seededRandom } from "../../lib/format";
+import { fileSize, linkify, occurredLabel } from "../../lib/format";
 import {
   destinationClass, destinationLabel, formatCohort, groupRoleClass, groupRoleLabels, membershipLabel, normaliseNode, relationLabel, toneFor,
   type Attachment, type Person, type PersonSummary, type Post, type SessionUser, type Tone,
@@ -32,6 +35,7 @@ const postsLoading = ref(false);
 const postsError = ref("");
 const postsHasMore = ref(false);
 const editorOpen = ref(false);
+const membershipEditorOpen = ref(false);
 const editorSection = ref<"basic" | "story" | "skills" | "files" | "records">("basic");
 const bioExpanded = ref(false);
 const copied = ref(false);
@@ -72,29 +76,21 @@ const bioTokens = computed(() => linkify(person.value?.bio ?? ""));
 const bioLong = computed(() => (person.value?.bio ?? "").length > 220);
 const postCount = computed(() => person.value?.postCount ?? posts.value.length);
 const hasStory = computed(() => Boolean(person.value?.education || person.value?.experience || achievements.value.length));
+const zodiac = computed(() => zodiacForBirthday(person.value?.birthday));
+const canManageMembership = computed(() => Boolean(props.sessionToken && person.value && !isOwn.value && (person.value.permissions?.canEditMemberType || person.value.permissions?.canEditGroupRole)));
+const joinedLabel = computed(() => {
+  if (!person.value) return "—";
+  try {
+    if (person.value.joinedYear && person.value.joinedSeason) return formatJoinedSeason({ joinedYear: person.value.joinedYear, joinedSeason: person.value.joinedSeason });
+    return person.value.joinedAt ? formatJoinedSeason(person.value.joinedAt) : "—";
+  } catch { return "—"; }
+});
 const stats = computed(() => [
   { label: "动态", value: postCount.value, tab: "posts" as Tab },
   { label: "徒弟", value: students.value.length },
   { label: "后辈", value: person.value?.descendantCount ?? students.value.length },
   { label: "事迹荣誉", value: signedIn.value ? achievements.value.length : "—", tab: "story" as Tab },
 ]);
-
-/** A deterministic constellation per member, drawn across the cover. */
-const constellation = computed(() => {
-  const random = seededRandom(props.personId);
-  const count = 7 + Math.floor(random() * 4);
-  const stars = Array.from({ length: count }, (_, index) => ({
-    x: 360 + (index / (count - 1)) * 480 + (random() - 0.5) * 50,
-    y: 36 + random() * 120,
-    r: 1.6 + random() * 2.4,
-    delay: (random() * 4).toFixed(2),
-  }));
-  const lines = stars.slice(1).map((star, index) => ({ from: stars[index], to: star }));
-  const branch = Math.floor(random() * (count - 3)) + 1;
-  lines.push({ from: stars[branch], to: stars[Math.min(count - 1, branch + 2)] });
-  const dust = Array.from({ length: 70 }, () => ({ x: random() * 1000, y: random() * 300, r: random() * 1.1 + 0.2, o: (random() * 0.6 + 0.15).toFixed(2) }));
-  return { stars, lines, dust };
-});
 
 function handleError(cause: unknown, fallback: string) {
   if (cause instanceof ApiError && cause.status === 401) emit("sessionExpired");
@@ -147,6 +143,7 @@ function resetForPerson() {
   tab.value = "posts";
   bioExpanded.value = false;
   editorOpen.value = false;
+  membershipEditorOpen.value = false;
   lightbox.value = null;
   fileError.value = "";
   void loadDetail();
@@ -194,6 +191,9 @@ function onProfileSaved(data: Record<string, unknown>) {
   detail.value = updated;
   emit("personUpdated", updated);
 }
+function onMembershipSaved(data: Record<string, unknown>) {
+  onProfileSaved(data);
+}
 async function onEditorChanged() {
   await loadDetail();
   if (detail.value) emit("personUpdated", detail.value);
@@ -237,17 +237,15 @@ function selectTab(next: Tab) {
 
     <template v-if="person">
       <section class="profile-hero">
-        <div class="profile-cover" aria-hidden="true">
+        <div class="profile-cover">
           <div class="cover-nebula"></div>
-          <svg class="cover-constellation" viewBox="0 0 1000 300" preserveAspectRatio="xMidYMid slice">
-            <circle v-for="(dot, index) in constellation.dust" :key="`d${index}`" :cx="dot.x" :cy="dot.y" :r="dot.r" :opacity="dot.o" class="cover-dust" />
-            <line v-for="(line, index) in constellation.lines" :key="`l${index}`" class="cover-line" :x1="line.from.x" :y1="line.from.y" :x2="line.to.x" :y2="line.to.y" :style="{ animationDelay: `${0.4 + index * 0.12}s` }" />
-            <g v-for="(star, index) in constellation.stars" :key="`s${index}`" class="cover-star" :style="{ animationDelay: `${star.delay}s` }">
-              <circle :cx="star.x" :cy="star.y" :r="star.r * 3.2" class="cover-star-halo" />
-              <circle :cx="star.x" :cy="star.y" :r="star.r" class="cover-star-core" />
-            </g>
-          </svg>
-          <span class="cover-caption">{{ person.name }} 的星座 · {{ formatCohort(person.cohort) }}</span>
+          <ZodiacConstellation v-if="zodiac" :zodiac="zodiac" :owner-name="person.name" />
+          <div v-else class="zodiac-empty">
+            <span aria-hidden="true">✦</span>
+            <div><strong>生日待完善</strong><small>补充生日后，这里会点亮专属星座图</small></div>
+            <button v-if="isOwn" type="button" @click="openEditor('basic')">去完善</button>
+          </div>
+          <span class="cover-caption">{{ formatCohort(person.cohort) }} · PERSONAL STARFIELD</span>
         </div>
 
         <div class="profile-identity">
@@ -259,7 +257,7 @@ function selectTab(next: Tab) {
           </div>
           <div class="identity-main">
             <p class="identity-eyebrow">PERSONAL STARFIELD<span>第 {{ generation }} 代 · {{ formatCohort(person.cohort) }}</span></p>
-            <h1>{{ person.name }}<span v-if="person.groupRole" class="role-badge" :class="groupRoleClass(person)">{{ groupRoleLabels[person.groupRole] }}</span></h1>
+            <h1>{{ person.name }}<span v-if="person.groupRole" class="role-badge" :class="groupRoleClass(person)">{{ formatCohort(person.cohort) }}{{ groupRoleLabels[person.groupRole] }}</span></h1>
             <p v-if="person.motto" class="identity-motto">{{ person.motto }}</p>
             <p v-else-if="isOwn" class="identity-motto placeholder"><button type="button" @click="openEditor('basic')">写一句个性签名</button></p>
             <div class="identity-chips">
@@ -275,13 +273,16 @@ function selectTab(next: Tab) {
               <button class="primary-command" type="button" @click="openEditor()">编辑主页</button>
               <button class="secondary-command" type="button" @click="emit('navigate', '/students')">徒弟管理</button>
             </template>
-            <a v-else-if="person.contactEmail" class="secondary-command as-link" :href="`mailto:${person.contactEmail}`">写信给 TA</a>
+            <template v-else>
+              <button v-if="canManageMembership" class="primary-command" type="button" @click="membershipEditorOpen = true">设置成员身份</button>
+              <a v-if="person.contactEmail" class="secondary-command as-link" :href="`mailto:${person.contactEmail}`">写信给 TA</a>
+            </template>
           </div>
           <div class="identity-stats">
             <component :is="item.tab ? 'button' : 'div'" v-for="item in stats" :key="item.label" class="stat" :type="item.tab ? 'button' : undefined" @click="item.tab && selectTab(item.tab)">
               <strong>{{ item.value }}</strong><span>{{ item.label }}</span>
             </component>
-            <div class="stat"><strong class="small">{{ person.joinedAt || "—" }}</strong><span>加入星谱</span></div>
+            <div class="stat"><strong class="small">{{ joinedLabel }}</strong><span>进组时间</span></div>
           </div>
         </div>
       </section>
@@ -468,6 +469,14 @@ function selectTab(next: Tab) {
       @close="editorOpen = false"
       @saved="onProfileSaved"
       @changed="onEditorChanged"
+      @session-expired="emit('sessionExpired')"
+    />
+    <MembershipEditor
+      v-if="membershipEditorOpen && person && canManageMembership && sessionToken"
+      :person="person"
+      :token="sessionToken"
+      @close="membershipEditorOpen = false"
+      @saved="onMembershipSaved"
       @session-expired="emit('sessionExpired')"
     />
     <ImageLightbox v-if="lightbox" :images="lightbox.images" :start="lightbox.start" :token="sessionToken" @close="lightbox = null" />

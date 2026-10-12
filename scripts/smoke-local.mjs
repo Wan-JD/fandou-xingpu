@@ -94,6 +94,20 @@ const accountCreated = await request("/api/admin/accounts", { token: admin.token
 } });
 assert.equal(accountCreated.response.status, 201, JSON.stringify(accountCreated.payload));
 const memberSession = await login(accountEmail, accountPassword);
+const mentorEmail = `mentor-${runId}@example.com`;
+const mentorPassword = "mentor-password-2026";
+const mentorAccount = await request("/api/admin/accounts", { token: admin.token, method: "POST", body: {
+  personId: parentId, email: mentorEmail, password: mentorPassword, role: "member",
+} });
+assert.equal(mentorAccount.response.status, 201, JSON.stringify(mentorAccount.payload));
+const mentorSession = await login(mentorEmail, mentorPassword);
+const membershipVersion = (await request(`/api/people/${childId}`, { token: mentorSession.token })).payload.data.version;
+assert.equal((await request(`/api/admin/members/${childId}`, { token: admin.token, method: "PATCH", body: { version: membershipVersion, memberType: "probationary" } })).response.status, 403, "admin cannot bypass mentor-only member type edits");
+assert.equal((await request(`/api/people/${childId}/membership`, { token: memberSession.token, method: "PATCH", body: { version: membershipVersion, groupRole: "leader" } })).response.status, 403, "members cannot set their own group role");
+const mentorMembership = await request(`/api/people/${childId}/membership`, { token: mentorSession.token, method: "PATCH", body: { version: membershipVersion, memberType: "probationary", groupRole: "vice_leader" } });
+assert.equal(mentorMembership.response.status, 200, JSON.stringify(mentorMembership.payload));
+assert.equal(mentorMembership.payload.data.memberType, "probationary");
+assert.equal(mentorMembership.payload.data.groupRole, "vice_leader");
 
 const placeholder = await request("/api/me/placeholder-students", { token: memberSession.token, method: "POST", body: {
   name: `待认领 ${runId}`, nickname: "挂名节点", memberType: "probationary", cohortId,
@@ -143,6 +157,9 @@ const enrichedProfile = await request("/api/me/profile", { token: memberSession.
   contactEmail: `contact-${runId}@example.com`,
   education: "星谱大学 · 计算机科学",
   experience: "参与星尘工具链建设",
+  birthday: "2002-10-24",
+  joinedYear: 2026,
+  joinedSeason: "spring",
   skills: ["TypeScript", "写作"],
   links: [{ label: "作品集", url: "https://example.com/portfolio" }],
 } });
@@ -150,6 +167,8 @@ assert.equal(enrichedProfile.response.status, 200, JSON.stringify(enrichedProfil
 assert.equal(enrichedProfile.payload.data.contactEmail, `contact-${runId}@example.com`);
 assert.deepEqual(enrichedProfile.payload.data.skills, ["TypeScript", "写作"]);
 assert.equal(enrichedProfile.payload.data.links[0].url, "https://example.com/portfolio");
+assert.equal(enrichedProfile.payload.data.birthday, "2002-10-24");
+assert.equal(enrichedProfile.payload.data.joinedAt, "2026-03-01");
 const publicTree = await request("/api/tree");
 const publicNode = publicTree.payload.data.nodes.find((item) => item.id === childId);
 assert.ok(publicNode);
@@ -229,8 +248,9 @@ assert.equal(afterAttachmentDelete.payload.data.resume, null);
 
 // ---- Personal blog: group role, motto, posts and likes ----
 assert.equal((await request("/api/me/profile", { token: memberSession.token, method: "PATCH", body: { version: clearedProfile.payload.data.version, destination: "startup" } })).response.status, 400, "retired destinations are rejected");
+assert.equal((await request("/api/me/profile", { token: memberSession.token, method: "PATCH", body: { version: clearedProfile.payload.data.version, groupRole: "leader" } })).response.status, 400, "self profile cannot edit group role");
 const blogProfile = await request("/api/me/profile", { token: memberSession.token, method: "PATCH", body: {
-  version: clearedProfile.payload.data.version, groupRole: "vice_leader", motto: "向光而行", coverTheme: "aurora",
+  version: clearedProfile.payload.data.version, motto: "向光而行", coverTheme: "aurora",
 } });
 assert.equal(blogProfile.response.status, 200, JSON.stringify(blogProfile.payload));
 assert.equal(blogProfile.payload.data.groupRole, "vice_leader");
@@ -247,6 +267,7 @@ assert.equal((await request(`/api/people/${childId}`)).payload.data.achievements
 
 const publicPostForm = new FormData();
 publicPostForm.append("title", "第一条动态");
+publicPostForm.append("kind", "note");
 publicPostForm.append("content", `公开动态 ${runId}`);
 publicPostForm.append("visibility", "public");
 publicPostForm.append("images", new Blob(["post-image"], { type: "image/png" }), "post.png");
@@ -255,11 +276,15 @@ assert.equal(publicPost.response.status, 201, JSON.stringify(publicPost.payload)
 assert.equal(publicPost.payload.data.images.length, 1);
 const publicImageId = publicPost.payload.data.images[0].id;
 const membersPostForm = new FormData();
-membersPostForm.append("content", `成员动态 ${runId}`);
+membersPostForm.append("kind", "experience");
+membersPostForm.append("title", "经验分享");
+membersPostForm.append("content", `# 成员经验 ${runId}\n\n- 观察\n- 复盘`);
 membersPostForm.append("visibility", "members");
-membersPostForm.append("images", new Blob(["members-image"], { type: "image/webp" }), "members.webp");
+for (let index = 0; index < 7; index += 1) membersPostForm.append("images", new Blob([`members-image-${index}`], { type: "image/webp" }), `members-${index}.webp`);
 const membersPost = await requestMultipart("/api/me/posts", { token: memberSession.token, method: "POST", form: membersPostForm });
 assert.equal(membersPost.response.status, 201, JSON.stringify(membersPost.payload));
+assert.equal(membersPost.payload.data.kind, "experience");
+assert.equal(membersPost.payload.data.images.length, 7, "experience posts accept more than the six-image note limit");
 const membersImageId = membersPost.payload.data.images[0].id;
 const badPostForm = new FormData();
 badPostForm.append("content", "bad image");
@@ -287,8 +312,12 @@ assert.equal((await request(`/api/posts/${publicPost.payload.data.id}/like`, { m
 const pinned = await request(`/api/me/posts/${membersPost.payload.data.id}`, { token: memberSession.token, method: "PATCH", body: { version: membersPost.payload.data.version, isPinned: true } });
 assert.equal(pinned.response.status, 200, JSON.stringify(pinned.payload));
 assert.equal((await request(`/api/people/${childId}/posts`, { token: memberSession.token })).payload.data[0].id, membersPost.payload.data.id, "pinned posts lead the feed");
+const editedPublic = await request(`/api/me/posts/${publicPost.payload.data.id}`, { token: memberSession.token, method: "PATCH", body: { version: publicPost.payload.data.version, content: `公开动态已更新 ${runId}` } });
+assert.equal(editedPublic.response.status, 200, JSON.stringify(editedPublic.payload));
+assert.equal((await request(`/api/me/posts/${publicPost.payload.data.id}`, { token: memberSession.token, method: "PATCH", body: { version: publicPost.payload.data.version, isPinned: true } })).response.status, 409, "a stale pin request is rejected");
+assert.equal((await request(`/api/people/${childId}/posts`, { token: memberSession.token })).payload.data[0].id, membersPost.payload.data.id, "a stale pin request does not clear the existing pin");
 assert.equal((await request(`/api/me/posts/${membersPost.payload.data.id}`, { token: memberSession.token, method: "PATCH", body: { version: membersPost.payload.data.version, content: "stale" } })).response.status, 409);
-assert.equal((await request(`/api/me/posts/${membersPost.payload.data.id}`, { token: admin.token, method: "PATCH", body: { version: pinned.payload.data.version, content: "not mine" } })).response.status, 409, "only the author edits a post");
+assert.equal((await request(`/api/me/posts/${membersPost.payload.data.id}`, { token: admin.token, method: "PATCH", body: { version: pinned.payload.data.version, content: "not mine" } })).response.status, 404, "only the author edits a post");
 const removedImage = await request(`/api/me/posts/${publicPost.payload.data.id}/images/${publicImageId}`, { token: memberSession.token, method: "DELETE" });
 assert.equal(removedImage.response.status, 200, JSON.stringify(removedImage.payload));
 assert.equal(removedImage.payload.data.images.length, 0);

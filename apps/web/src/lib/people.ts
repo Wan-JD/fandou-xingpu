@@ -1,4 +1,5 @@
 // Shared client-side shapes and labels for members of the lineage.
+import { academicYearAt, isDestinationStatisticEligible } from "@fandou-xingpu/shared";
 export type Status = "active" | "archived";
 export type MembershipType = "formal" | "probationary";
 export type Destination = "big_tech" | "postgraduate_985" | "postgraduate_211" | "other";
@@ -13,14 +14,16 @@ export type UploadCategory = "avatar" | "resume" | "photo" | "certificate";
 export type PersonSummary = { id: string; name: string; avatarUrl: string | null; cohort: Cohort | null; status: Status; memberType?: MembershipType | null; destination: Destination | null; groupRole: GroupRole | null; isFeatured?: boolean };
 export type Person = PersonSummary & {
   relationScope: "lineage" | "cohort_guest"; isFeatured: boolean; mentorId: string | null; depth: number | null; directStudentIds: string[];
-  role: string; joinedAt: string; tags: string[]; bio: string; motto?: string | null; coverTheme?: CoverTheme | null;
+  role: string; joinedAt: string; joinedYear?: number | null; joinedSeason?: "spring" | "autumn" | null; birthday?: string | null;
+  permissions?: { canEditMemberType: boolean; canEditGroupRole: boolean };
+  tags: string[]; bio: string; motto?: string | null; coverTheme?: CoverTheme | null;
   contactEmail?: string | null; education?: string | null; experience?: string | null; skills?: string[]; links?: ProfileLink[];
   resume?: Attachment | null; version?: number; mentor?: PersonSummary | null; students?: PersonSummary[]; achievements?: Achievement[];
   attachments?: Attachment[]; featuredNote?: string | null; lineagePath?: PersonSummary[]; descendantCount?: number; cohortPeers?: PersonSummary[]; postCount?: number;
 };
 export type SessionUser = { id: string; email?: string | null; phone?: string | null; displayName: string; personId: string; role: "member" | "admin"; mustChangePassword?: boolean };
 export type PostImage = { id: string; url: string };
-export type Post = { id: string; personId: string; title: string | null; content: string; visibility: "public" | "members"; isPinned: boolean; images: PostImage[]; likeCount: number; likedByViewer: boolean; version: number; createdAt: string; updatedAt: string };
+export type Post = { id: string; personId: string; kind?: "note" | "experience"; title: string | null; content: string; visibility: "public" | "members"; isPinned: boolean; images: PostImage[]; likeCount: number; likedByViewer: boolean; version: number; createdAt: string; updatedAt: string };
 
 export const destinationLabels: Record<Destination, string> = {
   big_tech: "大厂",
@@ -46,6 +49,35 @@ export const destinationLabel = (person: { destination: Destination | null }) =>
 export const destinationClass = (person: { destination: Destination | null }) => person.destination ? `destination-${person.destination}` : "destination-unset";
 export const groupRoleClass = (person: { groupRole?: GroupRole | null }) => person.groupRole ? `group-${person.groupRole}` : "";
 export const membershipLabel = (person: { memberType?: MembershipType | null }) => person.memberType ? membershipLabels[person.memberType] : "";
+
+/** The academic year advances on September 1 in China, not on January 1. */
+export function academicGrade(cohortYear: number | null | undefined, now = new Date()): number | null {
+  if (!cohortYear || !Number.isInteger(cohortYear)) return null;
+  return academicYearAt(now) - cohortYear + 1;
+}
+
+export function gradeLabel(cohortYear: number | null | undefined, now = new Date()) {
+  const grade = academicGrade(cohortYear, now);
+  if (grade === null) return "未分级";
+  if (grade <= 0) return "待入学";
+  if (grade <= 4) return ["大一", "大二", "大三", "大四"][grade - 1];
+  return "往届";
+}
+
+/** Only the current management cohorts carry role crests on the public constellation. */
+export function treeGroupRole(person: Pick<PersonSummary, "cohort" | "groupRole">, now = new Date()): GroupRole | null {
+  const grade = academicGrade(person.cohort?.year, now);
+  if (grade === 2) return person.groupRole;
+  if (grade === 3 && person.groupRole === "leader") return person.groupRole;
+  return null;
+}
+
+/** Destination aggregates cover graduates and current fourth-year members only. */
+export function destinationEligible(person: Pick<PersonSummary, "cohort" | "status">, now = new Date()) {
+  const grade = academicGrade(person.cohort?.year, now);
+  if (grade === null || grade <= 0) return false;
+  return isDestinationStatisticEligible({ status: person.status, cohortYear: person.cohort?.year ?? null }, now);
+}
 
 /** Gold marks the root and featured stars, fog marks graduates, everyone else glows aqua. */
 export function toneFor(person: { status: Status; isFeatured?: boolean; id: string }, rootId: string | null | undefined): Tone {
@@ -95,6 +127,13 @@ export function normaliseNode(node: Record<string, unknown>): Person {
     directStudentIds: Array.isArray(node.directStudentIds) ? node.directStudentIds.map(String) : [],
     role: String(node.role ?? "星谱成员"),
     joinedAt: String(node.joinedAt ?? ""),
+    joinedYear: typeof node.joinedYear === "number" ? node.joinedYear : null,
+    joinedSeason: node.joinedSeason === "spring" || node.joinedSeason === "autumn" ? node.joinedSeason : null,
+    birthday: node.birthday == null || node.birthday === "" ? null : String(node.birthday),
+    permissions: node.permissions && typeof node.permissions === "object" ? {
+      canEditMemberType: Boolean((node.permissions as { canEditMemberType?: unknown }).canEditMemberType),
+      canEditGroupRole: Boolean((node.permissions as { canEditGroupRole?: unknown }).canEditGroupRole),
+    } : undefined,
     tags: Array.isArray(node.tags) ? node.tags.map(String) : [],
     bio: String(node.bio ?? ""),
     motto: node.motto == null || node.motto === "" ? null : String(node.motto),

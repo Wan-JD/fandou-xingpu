@@ -4,6 +4,7 @@ import { computed, onMounted, ref } from "vue";
 type Member = {
   id: string; name: string; cohort_id: string | null; cohort_label: string | null; cohort_year: number | null;
   status: "active" | "archived"; destination: string | null; group_role: string | null; mentor_id: string | null;
+  birthday: string | null; joined_at: string | null;
   mentor_name: string | null; relation_scope: "lineage" | "cohort_guest"; version: number;
   bio: string; role: string; member_type: "formal" | "probationary"; is_featured: number; featured_note: string | null; tags_json: string;
   account_id: string | null; email: string | null; phone: string | null; account_role: "member" | "admin" | null;
@@ -21,10 +22,14 @@ const saving = ref("");
 const notice = ref("");
 const failure = ref("");
 const members = ref<Member[]>([]);
+const memberQuery = ref("");
 const invites = ref<Invite[]>([]);
 const editingId = ref("");
-const editForm = ref({ name: "", bio: "", role: "", memberType: "formal" as "formal" | "probationary", isFeatured: false, featuredNote: "", tags: "", cohortYear: "", status: "active", destination: "", groupRole: "", mentorId: "", relationScope: "lineage" });
-const memberForm = ref({ name: "", cohortYear: String(new Date().getFullYear()), status: "active", memberType: "formal" as "formal" | "probationary", destination: "", groupRole: "", mentorId: "", relationScope: "lineage" });
+const shanghaiNow = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Shanghai", year: "numeric", month: "numeric" }).formatToParts().map((part) => [part.type, part.value]));
+const defaultJoinedYear = shanghaiNow.year;
+const defaultJoinedSeason = Number(shanghaiNow.month) >= 9 ? "autumn" : "spring";
+const editForm = ref({ name: "", bio: "", role: "", birthday: "", joinedYear: "", joinedSeason: "autumn" as "spring" | "autumn", isFeatured: false, featuredNote: "", tags: "", cohortYear: "", status: "active", destination: "", mentorId: "", relationScope: "lineage" });
+const memberForm = ref({ name: "", cohortYear: defaultJoinedYear, birthday: "", joinedYear: defaultJoinedYear, joinedSeason: defaultJoinedSeason as "spring" | "autumn", status: "active", destination: "", mentorId: "", relationScope: "lineage" });
 const accountForm = ref({ personId: "", email: "", phone: "", password: "", role: "member" });
 const resetPasswords = ref<Record<string, string>>({});
 
@@ -36,9 +41,16 @@ const destinationOptions = [
   ["", "暂未填写"], ["big_tech", "大厂"], ["postgraduate_985", "985 研"],
   ["postgraduate_211", "211 研"], ["other", "其他"],
 ];
-const groupRoleOptions = [["", "无"], ["leader", "组长"], ["vice_leader", "副组长"]];
 const groupRoleText: Record<string, string> = { leader: "组长", vice_leader: "副组长" };
 const accountlessMembers = computed(() => members.value.filter((member) => !member.account_id));
+const filteredMembers = computed(() => {
+  const query = memberQuery.value.trim().toLocaleLowerCase();
+  if (!query) return members.value;
+  return members.value.filter((member) => [
+    member.name, member.cohort_label ?? "", member.member_type === "probationary" ? "预备组员" : "正式组员",
+    member.group_role ? groupRoleText[member.group_role] : "", member.mentor_name ?? "",
+  ].join(" ").toLocaleLowerCase().includes(query));
+});
 const headers = computed(() => ({ Authorization: `Bearer ${props.sessionToken}`, "Content-Type": "application/json" }));
 
 async function api<T>(path: string, init: RequestInit = {}) {
@@ -87,21 +99,23 @@ async function createMember() {
   const ok = await mutate("member-new", () => api("/members", { method: "POST", body: JSON.stringify({
     ...memberForm.value,
     cohortYear: memberForm.value.cohortYear ? Number(memberForm.value.cohortYear) : null,
+    joinedYear: memberForm.value.joinedYear ? Number(memberForm.value.joinedYear) : null,
+    birthday: memberForm.value.birthday || null,
     mentorId: memberForm.value.mentorId || null,
     destination: memberForm.value.destination || null,
-    groupRole: memberForm.value.groupRole || null,
   }) }), "人物已加入星谱", true);
-  if (ok) memberForm.value = { name: "", cohortYear: String(new Date().getFullYear()), status: "active", memberType: "formal", destination: "", groupRole: "", mentorId: "", relationScope: "lineage" };
+  if (ok) memberForm.value = { name: "", cohortYear: defaultJoinedYear, birthday: "", joinedYear: defaultJoinedYear, joinedSeason: defaultJoinedSeason, status: "active", destination: "", mentorId: "", relationScope: "lineage" };
 }
 
 function editMember(member: Member) {
   editingId.value = member.id;
   editForm.value = {
-    name: member.name, bio: member.bio, role: member.role, memberType: member.member_type ?? "formal",
+    name: member.name, bio: member.bio, role: member.role, birthday: member.birthday ?? "",
+    joinedYear: member.joined_at?.slice(0, 4) ?? "", joinedSeason: (Number(member.joined_at?.slice(5, 7) ?? 9) < 9 ? "spring" : "autumn"),
     isFeatured: Boolean(member.is_featured), featuredNote: member.featured_note ?? "",
     tags: (() => { try { return (JSON.parse(member.tags_json) as string[]).join("、"); } catch { return ""; } })(),
     cohortYear: member.cohort_year == null ? "" : String(member.cohort_year), status: member.status,
-    destination: member.destination ?? "", groupRole: member.group_role ?? "", mentorId: member.mentor_id ?? "", relationScope: member.relation_scope,
+    destination: member.destination ?? "", mentorId: member.mentor_id ?? "", relationScope: member.relation_scope,
   };
 }
 
@@ -115,12 +129,13 @@ async function saveMember(member: Member) {
       isFeatured: editForm.value.isFeatured,
       featuredNote: editForm.value.featuredNote || null,
       status: editForm.value.status,
-      memberType: editForm.value.memberType,
+      birthday: editForm.value.birthday || null,
+      joinedYear: editForm.value.joinedYear ? Number(editForm.value.joinedYear) : null,
+      joinedSeason: editForm.value.joinedSeason,
       tags: editForm.value.tags.split(/[、,，]/).map((tag) => tag.trim()).filter(Boolean),
       cohortYear: editForm.value.cohortYear ? Number(editForm.value.cohortYear) : null,
       mentorId: editForm.value.mentorId || null,
       destination: editForm.value.destination || null,
-      groupRole: editForm.value.groupRole || null,
       version: member.version,
     }),
   }), "成员资料已保存", true);
@@ -207,25 +222,32 @@ onMounted(loadAll);
         <h2>新增无账号人物</h2>
         <label>姓名<input v-model.trim="memberForm.name" maxlength="100" required /></label>
         <label>级别年份<input v-model.trim="memberForm.cohortYear" type="number" min="1900" max="2200" placeholder="例如 2023" /></label>
+        <label>生日<input v-model="memberForm.birthday" type="date" /></label>
+        <label>进组年份<input v-model.trim="memberForm.joinedYear" type="number" min="1900" max="2200" /></label>
+        <label>进组季节<select v-model="memberForm.joinedSeason"><option value="spring">春季</option><option value="autumn">秋季</option></select></label>
         <label>状态<select v-model="memberForm.status"><option value="active">在读</option><option value="archived">毕业</option></select></label>
-        <label>组员身份<select v-model="memberForm.memberType"><option value="formal">正式组员</option><option value="probationary">预备组员</option></select></label>
         <label>去向<select v-model="memberForm.destination"><option v-for="option in destinationOptions" :key="option[0]" :value="option[0]">{{ option[1] }}</option></select></label>
-        <label>组内职务<select v-model="memberForm.groupRole"><option v-for="option in groupRoleOptions" :key="option[0]" :value="option[0]">{{ option[1] }}</option></select></label>
         <label>师傅<select v-model="memberForm.mentorId"><option value="">无</option><option v-for="member in members" :key="member.id" :value="member.id">{{ member.name }}</option></select></label>
         <button class="primary-button" type="submit" :disabled="saving === 'member-new'">新增人物</button>
       </form>
 
+      <label class="member-search">
+        <span>筛选成员</span>
+        <input v-model.trim="memberQuery" type="search" placeholder="搜索姓名、级别、身份、职务或师傅" />
+        <small>{{ filteredMembers.length }} / {{ members.length }}</small>
+      </label>
       <div class="member-list">
-        <article v-for="member in members" :key="member.id" class="member-row">
+        <article v-for="member in filteredMembers" :key="member.id" class="member-row">
           <template v-if="editingId === member.id">
             <div class="member-grid editing">
               <label>姓名<input v-model.trim="editForm.name" maxlength="100" /></label>
               <label>身份说明<input v-model.trim="editForm.role" maxlength="160" /></label>
               <label>级别年份<input v-model.trim="editForm.cohortYear" type="number" min="1900" max="2200" placeholder="例如 2023" /></label>
+              <label>生日<input v-model="editForm.birthday" type="date" /></label>
+              <label>进组年份<input v-model.trim="editForm.joinedYear" type="number" min="1900" max="2200" /></label>
+              <label>进组季节<select v-model="editForm.joinedSeason"><option value="spring">春季</option><option value="autumn">秋季</option></select></label>
               <label>状态<select v-model="editForm.status"><option value="active">在读</option><option value="archived">毕业</option></select></label>
-              <label>组员身份<select v-model="editForm.memberType"><option value="formal">正式组员</option><option value="probationary">预备组员</option></select></label>
               <label>去向<select v-model="editForm.destination"><option v-for="option in destinationOptions" :key="option[0]" :value="option[0]">{{ option[1] }}</option></select></label>
-              <label>组内职务<select v-model="editForm.groupRole"><option v-for="option in groupRoleOptions" :key="option[0]" :value="option[0]">{{ option[1] }}</option></select></label>
               <label>师傅<select v-model="editForm.mentorId"><option value="">无</option><option v-for="candidate in members.filter((item) => item.id !== member.id)" :key="candidate.id" :value="candidate.id">{{ candidate.name }}</option></select></label>
               <label class="wide-field">简介<textarea v-model="editForm.bio" maxlength="10000" rows="3"></textarea></label>
               <label>标签<input v-model.trim="editForm.tags" maxlength="1000" placeholder="以顿号或逗号分隔" /></label>
@@ -296,6 +318,9 @@ h2 { grid-column: 1 / -1; margin: 0; font-family: var(--serif); font-size: 18px;
 input, select, textarea { width: 100%; min-height: 38px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; outline: 0; background: rgba(3, 8, 20, .72); color: var(--ink); }
 input:focus, select:focus, textarea:focus { border-color: rgba(142, 217, 208, .55); }
 .primary-button, .admin-form > button { align-self: end; min-height: 38px; padding: 8px 13px; border: 1px solid rgba(231, 201, 130, .48); border-radius: 6px; background: rgba(231, 201, 130, .1); color: var(--gold); }
+.member-search { position: relative; display: grid; grid-template-columns: auto minmax(180px, 420px) auto; align-items: center; justify-content: start; gap: 10px; margin: 0 0 14px; color: var(--ink-soft); font-size: 11px; }
+.member-search input { min-height: 38px; }
+.member-search small { color: var(--muted); font-variant-numeric: tabular-nums; }
 .member-list, .cohort-list, .audit-list { display: grid; gap: 8px; }
 .member-row, .cohort-row, .audit-list article { position: relative; padding: 14px; border: 1px solid var(--line); border-radius: 6px; background: rgba(9, 18, 39, .58); }
 .member-summary { display: grid; gap: 4px; padding-right: 62px; }
@@ -323,5 +348,5 @@ td { color: var(--ink-soft); }
 .audit-list time, .audit-list span { color: var(--muted); }
 .audit-list pre { grid-column: 2 / -1; margin: 0; color: var(--ink-soft); white-space: pre-wrap; }
 @media (max-width: 900px) { .admin-form, .account-form, .cohort-new { grid-template-columns: repeat(2, 1fr); } .admin-form h2, .admin-form > button, .admin-form .wide { grid-column: 1 / -1; } .cohort-row { grid-template-columns: repeat(2, 1fr); } .member-grid { grid-template-columns: repeat(2, 1fr); } .audit-list article { grid-template-columns: 1fr; } .audit-list pre { grid-column: auto; } }
-@media (max-width: 560px) { .admin-panel { width: calc(100% - 20px); padding: 16px; } .admin-form, .account-form, .cohort-new, .member-grid, .cohort-row { grid-template-columns: 1fr; } .admin-form h2, .admin-form > button, .admin-form .wide, .member-grid .wide-field { grid-column: auto; } }
+@media (max-width: 560px) { .admin-panel { width: calc(100% - 20px); padding: 16px; } .admin-form, .account-form, .cohort-new, .member-grid, .cohort-row { grid-template-columns: 1fr; } .admin-form h2, .admin-form > button, .admin-form .wide, .member-grid .wide-field { grid-column: auto; } .member-search { grid-template-columns: 1fr auto; } .member-search > span { grid-column: 1 / -1; } }
 </style>

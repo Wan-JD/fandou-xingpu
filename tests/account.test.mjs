@@ -35,3 +35,15 @@ test("未配置数据库时个人资料修改不会绕过持久化层", async ()
   assert.equal(response.status, 503);
   assert.equal((await response.json()).error.code, "DATABASE_UNAVAILABLE");
 });
+
+test("跨域预检允许动态点赞使用 PUT", async () => {
+  const response = await app.request("http://localhost/api/posts/post-1/like", {
+    method: "OPTIONS",
+    headers: {
+      Origin: "https://xingpu.example",
+      "Access-Control-Request-Method": "PUT",
+    },
+  }, env);
+  assert.equal(response.status, 204);
+  assert.match(response.headers.get("Access-Control-Allow-Methods") ?? "", /PUT/);
+});

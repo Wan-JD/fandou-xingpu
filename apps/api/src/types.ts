@@ -7,6 +7,7 @@ export interface Env {
 
 export type Destination = "big_tech" | "postgraduate_985" | "postgraduate_211" | "other";
 export type GroupRole = "leader" | "vice_leader";
+export type JoinSeason = "spring" | "autumn";
 
 export interface Person {
   id: string;
@@ -17,6 +18,9 @@ export interface Person {
   role: string;
   generation: string;
   joinedAt: string;
+  joinedYear: number;
+  joinedSeason: JoinSeason;
+  birthday: string | null;
   status: "active" | "archived";
   memberType: "formal" | "probationary";
   destination: Destination | null;
@@ -62,6 +66,9 @@ export interface TreeNode {
   role: string;
   generation: string;
   joinedAt: string;
+  joinedYear: number;
+  joinedSeason: JoinSeason;
+  birthday: string | null;
   tags: string[];
   bio: string;
   contactEmail?: string | null;

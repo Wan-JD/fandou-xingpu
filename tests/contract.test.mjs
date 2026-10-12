@@ -124,7 +124,8 @@ test("组长与副组长是独立的组内职务", () => {
   assert.equal(groupRoleSchema.safeParse("leader").success, true);
   assert.equal(groupRoleSchema.safeParse("vice_leader").success, true);
   assert.equal(groupRoleSchema.safeParse("big_tech").success, false);
-  assert.equal(personUpdateSchema.safeParse({ version: 1, groupRole: null, motto: "向光而行", coverTheme: "aurora" }).success, true);
+  assert.equal(personUpdateSchema.safeParse({ version: 1, motto: "向光而行", coverTheme: "aurora" }).success, true);
+  assert.equal(personUpdateSchema.safeParse({ version: 1, groupRole: null }).success, false, "本人不能修改组内职务");
   assert.equal(personUpdateSchema.safeParse({ version: 1, coverTheme: "unknown" }).success, false);
   assert.equal(personUpdateSchema.safeParse({ version: 1, motto: "x".repeat(121) }).success, false);
 });

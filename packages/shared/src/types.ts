@@ -1,3 +1,5 @@
+import type { JoinSeason } from "./domain.ts";
+
 export type Id = string;
 
 export type RelationScope = "lineage" | "cohort_guest";
@@ -7,6 +9,7 @@ export type Destination = "big_tech" | "postgraduate_985" | "postgraduate_211" |
 export type GroupRole = "leader" | "vice_leader";
 export type CoverTheme = "nebula" | "aurora" | "dawn" | "abyss";
 export type PostVisibility = "public" | "members";
+export type PostKind = "note" | "experience";
 export type DatePrecision = "year" | "month" | "day";
 export type AchievementKind = "achievement" | "honor";
 export type AttachmentCategory = "avatar" | "resume" | "photo" | "certificate" | "other";
@@ -31,6 +34,7 @@ export interface PersonSummary {
   memberType: MemberType;
   destination: Destination | null;
   groupRole: GroupRole | null;
+  birthday: string | null;
 }
 
 export interface PersonNode extends PersonSummary {
@@ -40,6 +44,8 @@ export interface PersonNode extends PersonSummary {
   role: string;
   generation: string;
   joinedAt: string;
+  joinedYear: number;
+  joinedSeason: JoinSeason;
   tags: string[];
   bio: string;
   contactEmail?: string | null;
@@ -103,6 +109,7 @@ export interface Post {
   title: string | null;
   content: string;
   visibility: PostVisibility;
+  kind: PostKind;
   isPinned: boolean;
   images: PostImage[];
   likeCount: number;
@@ -122,6 +129,8 @@ export interface PersonDetail extends PersonSummary {
   postCount: number;
   generation: string;
   joinedAt: string;
+  joinedYear: number;
+  joinedSeason: JoinSeason;
   tags: string[];
   mentor: PersonSummary | null;
   students: PersonSummary[];
@@ -138,6 +147,10 @@ export interface PersonDetail extends PersonSummary {
   version: number;
   createdAt: string;
   updatedAt: string;
+  permissions: {
+    canEditMemberType: boolean;
+    canEditGroupRole: boolean;
+  };
 }
 
 export interface CohortDetail extends CohortSummary {
@@ -176,7 +189,9 @@ export interface TreeQuery {
 export interface PersonUpdateInput {
   bio?: string;
   destination?: Destination | null;
-  groupRole?: GroupRole | null;
+  birthday?: string | null;
+  joinedYear?: number;
+  joinedSeason?: JoinSeason;
   motto?: string | null;
   coverTheme?: CoverTheme | null;
   contactEmail?: string | null;

@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { personUpdateSchema, sessionLoginSchema } from "../../../packages/shared/src/schemas.ts";
+import { isValidDateOnly, joinedAtFromSeason, joinSeasonAt, joinSeasonFromDate } from "../../../packages/shared/src/domain.ts";
 import { persistence } from "./persistence.ts";
 import type { Env } from "./types.ts";
 
@@ -80,6 +81,34 @@ accountApi.patch("/me/profile", async (c) => {
   return c.json({ data: profile ?? updated });
 });
 
+accountApi.patch("/people/:personId/membership", async (c) => {
+  if (!c.env?.DB) return errorResponse("认证数据库未配置", "DATABASE_UNAVAILABLE", 503);
+  const store = persistence(c.env.DB);
+  const session = await store.session(c.req.header("Authorization"));
+  if (!session) return errorResponse("请先登录", "UNAUTHENTICATED", 401);
+  const body = await c.req.json().catch(() => null) as Record<string, unknown> | null;
+  const version = Number(body?.version);
+  const hasMemberType = Object.prototype.hasOwnProperty.call(body ?? {}, "memberType");
+  const hasGroupRole = Object.prototype.hasOwnProperty.call(body ?? {}, "groupRole");
+  const memberType = body?.memberType === "formal" || body?.memberType === "probationary" ? body.memberType : undefined;
+  const groupRole = body?.groupRole === null || body?.groupRole === "leader" || body?.groupRole === "vice_leader" ? body.groupRole : undefined;
+  if (!Number.isInteger(version) || version < 1 || (!hasMemberType && !hasGroupRole)
+    || (hasMemberType && !memberType) || (hasGroupRole && groupRole === undefined)) {
+    return errorResponse("请检查身份或职务设置", "VALIDATION_ERROR", 400);
+  }
+  const result = await store.updateMembership(session.user.personId, c.req.param("personId"), {
+    version,
+    ...(hasMemberType ? { memberType } : {}),
+    ...(hasGroupRole ? { groupRole } : {}),
+  }, session.user.id);
+  if (result.state === "not-found") return errorResponse("人物不存在", "PERSON_NOT_FOUND", 404);
+  if (result.state === "member-type-forbidden") return errorResponse("只有本人的直接师傅可以设置组员身份", "MEMBER_TYPE_FORBIDDEN", 403);
+  if (result.state === "group-role-forbidden") return errorResponse("只有本人的直接师傅或上一届正副组长可以设置组内职务", "GROUP_ROLE_FORBIDDEN", 403);
+  if (result.state === "version-conflict") return errorResponse("资料已更新，请刷新后重试", "VERSION_CONFLICT", 409);
+  if (result.state === "no-changes") return errorResponse("没有可保存的修改", "NO_CHANGES", 400);
+  return c.json({ data: result.person });
+});
+
 accountApi.post("/me/placeholder-students", async (c) => {
   if (!c.env?.DB) return errorResponse("认证数据库未配置", "DATABASE_UNAVAILABLE", 503);
   const store = persistence(c.env.DB);
@@ -90,14 +119,24 @@ accountApi.post("/me/placeholder-students", async (c) => {
   const loginIdentifier = typeof body?.loginIdentifier === "string" ? body.loginIdentifier.trim() : "";
   const cohortYear = body?.cohortYear === null || body?.cohortYear === undefined || body?.cohortYear === "" ? null : Number(body.cohortYear);
   const memberType = body?.memberType === "formal" ? "formal" : body?.memberType === "probationary" || body?.memberType === undefined ? "probationary" : null;
-  const joinedAt = body?.joinedAt === null || body?.joinedAt === undefined || body?.joinedAt === "" ? null : typeof body.joinedAt === "string" && /^\d{4}-\d{2}-\d{2}$/.test(body.joinedAt) ? body.joinedAt : null;
-  if (!name || name.length > 100 || loginIdentifier.length > 254 || !memberType || (body?.joinedAt && !joinedAt) || (cohortYear !== null && (!Number.isInteger(cohortYear) || cohortYear < 1900 || cohortYear > 2200))) {
+  const birthday = body?.birthday === null || body?.birthday === undefined || body?.birthday === "" ? null : typeof body.birthday === "string" && isValidDateOnly(body.birthday) ? body.birthday : undefined;
+  const hasJoinParts = body?.joinedYear !== undefined || body?.joinedSeason !== undefined;
+  const joinedYear = Number(body?.joinedYear);
+  const joinedSeason = body?.joinedSeason === "spring" || body?.joinedSeason === "autumn" ? body.joinedSeason : null;
+  const legacyJoinedAt = typeof body?.joinedAt === "string" && isValidDateOnly(body.joinedAt) ? joinSeasonFromDate(body.joinedAt).joinedAt : null;
+  const joinedAt = hasJoinParts && Number.isInteger(joinedYear) && joinedYear >= 1900 && joinedYear <= 2200 && joinedSeason
+    ? joinedAtFromSeason(joinedYear, joinedSeason)
+    : legacyJoinedAt ?? joinSeasonAt().joinedAt;
+  if (!name || name.length > 100 || loginIdentifier.length > 254 || !memberType
+    || (hasJoinParts && (!Number.isInteger(joinedYear) || joinedYear < 1900 || joinedYear > 2200 || !joinedSeason))
+    || birthday === undefined || (body?.joinedAt && !legacyJoinedAt)
+    || (cohortYear !== null && (!Number.isInteger(cohortYear) || cohortYear < 1900 || cohortYear > 2200))) {
     return errorResponse("请检查待认领节点资料", "VALIDATION_ERROR", 400);
   }
   const result = await store.createPlaceholder(
     session.user.personId,
     session.user.id,
-    { name, loginIdentifier: loginIdentifier || null, cohortYear, memberType, joinedAt },
+    { name, loginIdentifier: loginIdentifier || null, cohortYear, memberType, joinedAt, birthday },
     Date.now(),
     session.user.role === "admin",
   );
@@ -140,7 +179,12 @@ accountApi.patch("/me/placeholder-students/:personId", async (c) => {
   const hasGroupRole = Object.prototype.hasOwnProperty.call(body ?? {}, "groupRole");
   const groupRole = !hasGroupRole || body?.groupRole === null || body?.groupRole === "" ? null : body?.groupRole === "leader" || body?.groupRole === "vice_leader" ? body.groupRole : undefined;
   const status = body?.status === undefined ? undefined : body.status === "active" || body.status === "archived" ? body.status : null;
-  if (!Number.isInteger(version) || version < 1 || (name !== undefined && (!name || name.length > 100)) || (cohortYear !== null && (!Number.isInteger(cohortYear) || cohortYear < 1900 || cohortYear > 2200)) || memberType === null || groupRole === undefined || status === null) {
+  const hasBirthday = Object.prototype.hasOwnProperty.call(body ?? {}, "birthday");
+  const birthday = !hasBirthday || body?.birthday === null || body?.birthday === "" ? null : typeof body?.birthday === "string" && isValidDateOnly(body.birthday) ? body.birthday : undefined;
+  const hasJoinParts = body?.joinedYear !== undefined || body?.joinedSeason !== undefined;
+  const joinedYear = Number(body?.joinedYear);
+  const joinedSeason = body?.joinedSeason === "spring" || body?.joinedSeason === "autumn" ? body.joinedSeason : null;
+  if (!Number.isInteger(version) || version < 1 || (name !== undefined && (!name || name.length > 100)) || (cohortYear !== null && (!Number.isInteger(cohortYear) || cohortYear < 1900 || cohortYear > 2200)) || memberType === null || groupRole === undefined || status === null || birthday === undefined || (hasJoinParts && (!Number.isInteger(joinedYear) || joinedYear < 1900 || joinedYear > 2200 || !joinedSeason))) {
     return errorResponse("请检查徒弟资料", "VALIDATION_ERROR", 400);
   }
   const updated = await store.updateMentoredStudent(session.user.personId, personId, {
@@ -150,6 +194,8 @@ accountApi.patch("/me/placeholder-students/:personId", async (c) => {
     ...(memberType !== undefined ? { memberType } : {}),
     ...(hasGroupRole ? { groupRole: groupRole as "leader" | "vice_leader" | null } : {}),
     ...(status !== undefined ? { status } : {}),
+    ...(hasBirthday ? { birthday } : {}),
+    ...(hasJoinParts ? { joinedYear, joinedSeason: joinedSeason! } : {}),
   });
   if (!updated) return errorResponse("徒弟不存在、不是你的徒弟，或资料已更新", "VERSION_CONFLICT", 409);
   return c.json({ data: updated });

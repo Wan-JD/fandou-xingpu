@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { createPasswordFields, normalizeEmail, normalizePhone } from "./session.ts";
 import { persistence } from "./persistence.ts";
+import { isValidDateOnly, joinedAtFromSeason, joinSeasonAt } from "../../../packages/shared/src/domain.ts";
 import type { Env } from "./types.ts";
 
 type AdminVariables = {
@@ -13,6 +14,8 @@ type MemberRow = {
   cohort_id: string | null;
   cohort_label: string | null;
   cohort_year: number | null;
+  birthday: string | null;
+  joined_at: string | null;
   status: "active" | "archived";
   member_type: "formal" | "probationary";
   destination: string | null;
@@ -163,7 +166,7 @@ adminApi.get("/members", async (c) => {
     SELECT p.id, p.name, p.bio, p.role, p.is_featured, p.featured_note, p.tags_json,
       p.cohort_id, COALESCE(p.cohort_year, c.year) AS cohort_year,
       CASE WHEN COALESCE(p.cohort_year, c.year) IS NULL THEN NULL ELSE CAST(COALESCE(p.cohort_year, c.year) AS TEXT) || '级' END AS cohort_label,
-      p.status, p.member_type, p.destination, p.group_role,
+      p.status, p.member_type, p.destination, p.group_role, p.birthday, p.joined_at,
       p.mentor_id, mentor.name AS mentor_name, p.relation_scope, p.version,
       u.id AS account_id, u.email, u.phone, u.role AS account_role, u.status AS account_status
     FROM people p
@@ -182,18 +185,27 @@ adminApi.post("/members", async (c) => {
   const rawCohortYear = body?.cohortYear === null || body?.cohortYear === undefined || body?.cohortYear === "" ? null : Number(body?.cohortYear);
   const mentorId = nullableId(body?.mentorId);
   const status = typeof body?.status === "string" && personStatuses.has(body.status) ? body.status : "active";
-  const memberType = body?.memberType === "probationary" ? "probationary" : "formal";
+  if (Object.prototype.hasOwnProperty.call(body ?? {}, "memberType")) return error(403, "MEMBER_TYPE_FORBIDDEN", "请由本人的直接师傅设置组员身份");
+  if (Object.prototype.hasOwnProperty.call(body ?? {}, "groupRole")) return error(403, "GROUP_ROLE_FORBIDDEN", "请由本人的直接师傅或上一届正副组长设置组内职务");
+  const birthday = body?.birthday === null || body?.birthday === undefined || body?.birthday === "" ? null
+    : typeof body.birthday === "string" && isValidDateOnly(body.birthday) ? body.birthday : undefined;
+  const hasJoinParts = body?.joinedYear !== undefined || body?.joinedSeason !== undefined;
+  const joinedYear = Number(body?.joinedYear);
+  const joinedSeason = body?.joinedSeason === "spring" || body?.joinedSeason === "autumn" ? body.joinedSeason : null;
+  const joinedAt = hasJoinParts && Number.isInteger(joinedYear) && joinedYear >= 1900 && joinedYear <= 2200 && joinedSeason
+    ? joinedAtFromSeason(joinedYear, joinedSeason)
+    : joinSeasonAt().joinedAt;
   const destination = body?.destination === null || body?.destination === "" ? null
     : typeof body?.destination === "string" && destinations.has(body.destination) ? body.destination : undefined;
-  const groupRole = body?.groupRole === undefined || body?.groupRole === null || body?.groupRole === "" ? null
-    : typeof body.groupRole === "string" && groupRoles.has(body.groupRole) ? body.groupRole : undefined;
   // All current people belong to the same lineage. Keep accepting the legacy
   // field from older clients, but never create a new cohort_guest record.
   const relationScope = "lineage" as const;
   const cohortYear = rawCohortYear === null && legacyCohortId
     ? (await c.env.DB!.prepare("SELECT year FROM cohorts WHERE id = ?").bind(legacyCohortId).first<{ year: number | null }>())?.year ?? null
     : rawCohortYear;
-  if (!name || destination === undefined || groupRole === undefined || (cohortYear !== null && (!Number.isInteger(cohortYear) || cohortYear < 1900 || cohortYear > 2200))) return error(400, "VALIDATION_ERROR", "请检查姓名、级别年份和去向");
+  if (!name || destination === undefined || birthday === undefined
+    || (hasJoinParts && (!Number.isInteger(joinedYear) || joinedYear < 1900 || joinedYear > 2200 || !joinedSeason))
+    || (cohortYear !== null && (!Number.isInteger(cohortYear) || cohortYear < 1900 || cohortYear > 2200))) return error(400, "VALIDATION_ERROR", "请检查姓名、级别年份、生日、进组时间和去向");
   const id = `person-${crypto.randomUUID()}`;
   const relationError = await mentorProblem(c.env.DB!, id, mentorId, relationScope as "lineage" | "cohort_guest");
   if (relationError) return mentorError(relationError);
@@ -203,10 +215,10 @@ adminApi.post("/members", async (c) => {
       c.env.DB!.prepare(`
         INSERT INTO people (
           id, name, nickname, mentor_id, cohort_id, cohort_year, relation_scope, bio,
-          is_featured, status, member_type, destination, group_role, role, joined_at, tags_json
-        ) VALUES (?, ?, NULL, ?, NULL, ?, ?, '', 0, ?, ?, ?, ?, '星谱成员', date('now'), '[]')
-      `).bind(id, name, mentorId, cohortYear, relationScope, status, memberType, destination, groupRole),
-      audit(c.env.DB!, actor.id, "member.create", "person", id, { name, cohortYear, mentorId, status, memberType, destination, groupRole, relationScope }),
+          is_featured, status, member_type, destination, group_role, role, joined_at, birthday, tags_json
+        ) VALUES (?, ?, NULL, ?, NULL, ?, ?, '', 0, ?, 'formal', ?, NULL, '星谱成员', ?, ?, '[]')
+      `).bind(id, name, mentorId, cohortYear, relationScope, status, destination, joinedAt, birthday),
+      audit(c.env.DB!, actor.id, "member.create", "person", id, { name, cohortYear, mentorId, status, memberType: "formal", destination, groupRole: null, joinedAt, birthday, relationScope }),
     ]);
   } catch (cause) {
     const code = String(cause).match(/MENTOR_(SELF|NOT_FOUND|NOT_LINEAGE|CYCLE)|SCOPE_MENTOR_CONFLICT|HAS_LINEAGE_STUDENTS/)?.[0];
@@ -223,6 +235,8 @@ adminApi.patch("/members/:id", async (c) => {
   if (!existing) return error(404, "PERSON_NOT_FOUND", "人物不存在");
   const body = await c.req.json().catch(() => null) as Record<string, unknown> | null;
   if (!body) return error(400, "VALIDATION_ERROR", "请求内容无效");
+  if (Object.prototype.hasOwnProperty.call(body, "memberType")) return error(403, "MEMBER_TYPE_FORBIDDEN", "请通过成员资料页由本人的直接师傅设置组员身份");
+  if (Object.prototype.hasOwnProperty.call(body, "groupRole")) return error(403, "GROUP_ROLE_FORBIDDEN", "请通过成员资料页由本人的直接师傅或上一届正副组长设置组内职务");
   const assignments: string[] = [];
   const values: unknown[] = [];
   const details: Record<string, unknown> = {};
@@ -271,21 +285,24 @@ adminApi.patch("/members/:id", async (c) => {
     if (typeof body.status !== "string" || !personStatuses.has(body.status)) return error(400, "VALIDATION_ERROR", "人物状态无效");
     assignments.push("status = ?"); values.push(body.status); details.status = body.status;
   }
-  if ("memberType" in body) {
-    if (body.memberType !== "formal" && body.memberType !== "probationary") return error(400, "VALIDATION_ERROR", "组员身份无效");
-    assignments.push("member_type = ?"); values.push(body.memberType); details.memberType = body.memberType;
-  }
   if ("destination" in body) {
     const destination = body.destination === null || body.destination === "" ? null
       : typeof body.destination === "string" && destinations.has(body.destination) ? body.destination : undefined;
     if (destination === undefined) return error(400, "VALIDATION_ERROR", "去向无效");
     assignments.push("destination = ?"); values.push(destination); details.destination = destination;
   }
-  if ("groupRole" in body) {
-    const groupRole = body.groupRole === null || body.groupRole === "" ? null
-      : typeof body.groupRole === "string" && groupRoles.has(body.groupRole) ? body.groupRole : undefined;
-    if (groupRole === undefined) return error(400, "VALIDATION_ERROR", "组内职务无效");
-    assignments.push("group_role = ?"); values.push(groupRole); details.groupRole = groupRole;
+  if ("birthday" in body) {
+    const birthday = body.birthday === null || body.birthday === "" ? null
+      : typeof body.birthday === "string" && isValidDateOnly(body.birthday) ? body.birthday : undefined;
+    if (birthday === undefined) return error(400, "VALIDATION_ERROR", "生日无效");
+    assignments.push("birthday = ?"); values.push(birthday); details.birthday = birthday;
+  }
+  if ("joinedYear" in body || "joinedSeason" in body) {
+    const joinedYear = Number(body.joinedYear);
+    const joinedSeason = body.joinedSeason === "spring" || body.joinedSeason === "autumn" ? body.joinedSeason : null;
+    if (!Number.isInteger(joinedYear) || joinedYear < 1900 || joinedYear > 2200 || !joinedSeason) return error(400, "VALIDATION_ERROR", "进组时间无效");
+    const joinedAt = joinedAtFromSeason(joinedYear, joinedSeason);
+    assignments.push("joined_at = ?"); values.push(joinedAt); details.joinedAt = joinedAt;
   }
   if ("relationScope" in body && body.relationScope !== "lineage" && body.relationScope !== "cohort_guest") return error(400, "VALIDATION_ERROR", "成员归属已统一为谱系");
   if ("mentorId" in body) {

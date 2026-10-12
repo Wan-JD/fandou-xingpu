@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isValidDateOnly } from "./domain.ts";
 
 export const idSchema = z.string().trim().min(1).max(128);
 export const relationScopeSchema = z.enum(["lineage", "cohort_guest"]);
@@ -8,6 +9,9 @@ export const destinationSchema = z.enum(["big_tech", "postgraduate_985", "postgr
 export const groupRoleSchema = z.enum(["leader", "vice_leader"]);
 export const coverThemeSchema = z.enum(["nebula", "aurora", "dawn", "abyss"]);
 export const postVisibilitySchema = z.enum(["public", "members"]);
+export const postKindSchema = z.enum(["note", "experience"]);
+export const joinSeasonSchema = z.enum(["spring", "autumn"]);
+export const birthdaySchema = z.string().refine(isValidDateOnly, "请输入真实的出生日期");
 export const datePrecisionSchema = z.enum(["year", "month", "day"]);
 export const achievementKindSchema = z.enum(["achievement", "honor"]);
 export const profileLinkSchema = z.object({ label: z.string().trim().min(1).max(80), url: z.string().trim().url().max(500).refine((value) => /^https?:\/\//i.test(value), "链接必须使用 HTTP 或 HTTPS 协议") }).strict();
@@ -26,8 +30,9 @@ export const personSearchQuerySchema = z.object({
 export const personUpdateSchema = z.object({
   bio: z.string().trim().max(10_000).optional(),
   destination: destinationSchema.nullable().optional(),
-  memberType: memberTypeSchema.nullable().optional(),
-  groupRole: groupRoleSchema.nullable().optional(),
+  birthday: birthdaySchema.nullable().optional(),
+  joinedYear: z.number().int().min(1900).max(2200).optional(),
+  joinedSeason: joinSeasonSchema.optional(),
   motto: z.string().trim().max(120).nullable().optional(),
   coverTheme: coverThemeSchema.nullable().optional(),
   contactEmail: z.string().trim().email().max(254).nullable().optional(),
@@ -36,7 +41,11 @@ export const personUpdateSchema = z.object({
   skills: z.array(z.string().trim().min(1).max(80)).max(30).optional(),
   links: z.array(profileLinkSchema).max(20).optional(),
   version: z.number().int().min(1),
-}).strict();
+}).strict().superRefine((value, ctx) => {
+  if ((value.joinedYear === undefined) !== (value.joinedSeason === undefined)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: [value.joinedYear === undefined ? "joinedYear" : "joinedSeason"], message: "进组年份和季节必须同时填写" });
+  }
+});
 
 export const sessionLoginSchema = z.object({
   identifier: z.string().trim().min(1).max(254).optional(),
@@ -67,20 +76,27 @@ export const achievementInputSchema = z.object({
 });
 
 export const postInputSchema = z.object({
+  kind: postKindSchema.optional().default("note"),
   title: z.string().trim().max(120).nullable().optional(),
-  content: z.string().trim().min(1).max(10_000),
+  content: z.string().trim().min(1).max(100_000),
   visibility: postVisibilitySchema.optional().default("public"),
-}).strict();
+}).strict().superRefine((value, ctx) => {
+  if (value.kind === "note" && value.content.length > 10_000) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["content"], message: "随手记正文不能超过 10000 字" });
+});
 
 export const postUpdateSchema = z.object({
+  kind: postKindSchema.optional(),
   title: z.string().trim().max(120).nullable().optional(),
-  content: z.string().trim().min(1).max(10_000).optional(),
+  content: z.string().trim().min(1).max(100_000).optional(),
   visibility: postVisibilitySchema.optional(),
   isPinned: z.boolean().optional(),
   version: z.number().int().min(1),
-}).strict();
+}).strict().superRefine((value, ctx) => {
+  if (value.kind === "note" && value.content && value.content.length > 10_000) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["content"], message: "随手记正文不能超过 10000 字" });
+});
 
-export const POST_IMAGE_LIMIT = 6;
+export const POST_IMAGE_LIMITS = { note: 6, experience: 24 } as const;
+export const POST_IMAGE_LIMIT = POST_IMAGE_LIMITS.note;
 
 export const idParamsSchema = z.object({ id: idSchema });
 

@@ -27,7 +27,7 @@ onUnmounted(() => { window.removeEventListener("keydown", onKeydown, true); docu
     <button ref="closeRef" class="lightbox-close" type="button" aria-label="关闭预览" @click="emit('close')">×</button>
     <button v-if="images.length > 1" class="lightbox-nav prev" type="button" aria-label="上一张" @click="step(-1)">‹</button>
     <figure v-if="current" class="lightbox-figure">
-      <AuthImage :key="current.key" :src="current.src" :is-public="current.isPublic" :token="token" :alt="current.caption ?? '图片'" />
+      <AuthImage :key="current.key" :src="current.src" :is-public="current.isPublic" :token="token" fit="contain" :alt="current.caption ?? '图片'" />
       <figcaption><span v-if="current.caption">{{ current.caption }}</span><span v-if="images.length > 1">{{ index + 1 }} / {{ images.length }}</span></figcaption>
     </figure>
     <button v-if="images.length > 1" class="lightbox-nav next" type="button" aria-label="下一张" @click="step(1)">›</button>
@@ -37,7 +37,8 @@ onUnmounted(() => { window.removeEventListener("keydown", onKeydown, true); docu
 <style scoped>
 .lightbox { position: fixed; inset: 0; z-index: 140; display: grid; grid-template-columns: 64px minmax(0, 1fr) 64px; align-items: center; padding: 28px 12px; background: rgba(2, 4, 12, .9); backdrop-filter: blur(14px); animation: lightbox-in .25s ease-out; }
 .lightbox-figure { grid-column: 2; display: grid; justify-items: center; gap: 12px; margin: 0; min-width: 0; }
-.lightbox-figure :deep(.auth-image) { width: auto; max-width: 100%; height: auto; max-height: calc(100vh - 120px); min-width: 120px; min-height: 120px; border-radius: 14px; object-fit: contain; box-shadow: 0 30px 90px rgba(0, 0, 0, .6); }
+.lightbox-figure :deep(.auth-image) { width: auto; max-width: 100%; height: auto; max-height: calc(100vh - 120px); border-radius: 14px; object-fit: contain; box-shadow: 0 30px 90px rgba(0, 0, 0, .6); }
+.lightbox-figure :deep(.auth-image-placeholder) { width: min(70vw, 480px); height: min(60vh, 360px); }
 figcaption { display: flex; gap: 14px; color: var(--ink-soft); font-size: 12.5px; letter-spacing: .08em; }
 .lightbox-close { position: absolute; top: max(14px, env(safe-area-inset-top)); right: 16px; width: 42px; height: 42px; border: 1px solid var(--line); border-radius: 50%; background: rgba(8, 14, 30, .7); color: var(--ink); font-size: 24px; line-height: 1; }
 .lightbox-nav { width: 46px; height: 46px; justify-self: center; border: 1px solid var(--line); border-radius: 50%; background: rgba(8, 14, 30, .6); color: var(--ink); font-size: 28px; line-height: 1; transition: border-color .2s, color .2s; }

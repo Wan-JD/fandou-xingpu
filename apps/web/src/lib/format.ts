@@ -1,4 +1,5 @@
 // Date and text helpers for profile pages.
+import { formatJoinedSeason } from "@fandou-xingpu/shared";
 const parseDate = (value: string) => new Date(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(value) ? `${value.replace(" ", "T")}Z` : value);
 
 export function relativeTime(value: string, now = Date.now()) {
@@ -26,6 +27,13 @@ export function occurredLabel(value: string | null | undefined) {
   if (day) return `${year} 年 ${Number(month)} 月 ${Number(day)} 日`;
   if (month) return `${year} 年 ${Number(month)} 月`;
   return `${year} 年`;
+}
+
+/** Reduces an exact legacy date to the intentionally coarse year + season shown in profiles. */
+export function joinedSeasonLabel(value: string | null | undefined) {
+  if (!value) return "待补充";
+  try { return formatJoinedSeason(value); }
+  catch { return value; }
 }
 
 export function fileSize(bytes: number) {

@@ -1,4 +1,5 @@
 import type { Cohort, Person, TreeNode } from "./types.ts";
+import { joinSeasonAt, joinSeasonFromDate, joinedAtFromSeason, type JoinSeason } from "../../../packages/shared/src/domain.ts";
 import { analyzeLineage } from "./lib/lineage.ts";
 import {
   SESSION_TTL_MS,
@@ -33,6 +34,7 @@ type PersonRow = {
   version: number;
   role: string;
   joined_at: string | null;
+  birthday: string | null;
   tags_json: string;
   created_at: string;
   updated_at: string;
@@ -120,9 +122,21 @@ export type ClaimInspection =
 
 export type ContentViewer = { userId?: string; personId?: string; role?: "member" | "admin" };
 
+export function membershipPermissionsFor(
+  actor: { id: string; cohortYear: number | null; groupRole: Person["groupRole"] } | null,
+  target: { mentorId: string | null; cohortYear: number | null },
+) {
+  const canEditMemberType = actor?.id === target.mentorId;
+  const canEditGroupRole = canEditMemberType || Boolean(
+    actor && target.cohortYear != null && actor.cohortYear === target.cohortYear - 1
+    && (actor.groupRole === "leader" || actor.groupRole === "vice_leader"),
+  );
+  return { canEditMemberType, canEditGroupRole };
+}
+
 const PERSON_SELECT = `
   SELECT p.id, p.name, p.nickname, p.mentor_id, p.relation_scope, p.bio,
-    p.is_featured, p.status, p.member_type, p.destination, p.group_role, p.motto, p.cover_theme, p.version, p.role, p.joined_at,
+    p.is_featured, p.status, p.member_type, p.destination, p.group_role, p.motto, p.cover_theme, p.version, p.role, p.joined_at, p.birthday,
     p.tags_json, p.created_at, p.updated_at,
     p.contact_email, p.education, p.experience, p.skills_json, p.links_json,
     p.cohort_year AS cohort_year_direct,
@@ -211,6 +225,7 @@ function mapPerson(row: PersonRow): StoredPerson {
     memberCount: 0,
     description: row.cohort_description ?? "",
   } satisfies Cohort : null;
+  const joined = joinSeasonFromDate(row.joined_at ?? row.created_at.slice(0, 10));
   return {
     person: {
       id: row.id,
@@ -220,7 +235,10 @@ function mapPerson(row: PersonRow): StoredPerson {
       cohortYear,
       role: row.role,
       generation: cohort?.name ?? "未分级",
-      joinedAt: row.joined_at ?? row.created_at.slice(0, 10),
+      joinedAt: joined.joinedAt,
+      joinedYear: joined.joinedYear,
+      joinedSeason: joined.joinedSeason,
+      birthday: row.birthday,
       status: row.status,
       memberType: row.member_type,
       destination: row.destination,
@@ -262,6 +280,7 @@ function toSummary(record: StoredPerson) {
     memberType: person.memberType,
     destination: person.destination,
     groupRole: person.groupRole,
+    birthday: person.birthday,
   };
 }
 
@@ -300,6 +319,8 @@ export class D1Persistence {
       role: record.person.role,
       generation: record.person.generation,
       joinedAt: record.person.joinedAt,
+      joinedYear: record.person.joinedYear,
+      joinedSeason: record.person.joinedSeason,
       tags: record.person.tags,
       bio: record.person.bio,
       motto: record.person.motto ?? null,
@@ -349,6 +370,12 @@ export class D1Persistence {
       ? records.filter(({ person }) => person.id !== id && person.cohortYear === record.person.cohortYear).slice(0, 12)
       : [];
     const canViewMembers = Boolean(viewer?.userId);
+    const viewerRecord = viewer?.personId ? byId.get(viewer.personId) : undefined;
+    const permissions = membershipPermissionsFor(viewerRecord ? {
+      id: viewerRecord.person.id,
+      cohortYear: viewerRecord.person.cohortYear,
+      groupRole: viewerRecord.person.groupRole,
+    } : null, { mentorId: record.person.mentorId, cohortYear: record.person.cohortYear });
     const attachments = await this.attachments(id, viewer);
     const postCount = await this.db.prepare("SELECT COUNT(*) AS count FROM posts WHERE person_id = ? AND (visibility = 'public' OR ? = 1)")
       .bind(id, canViewMembers ? 1 : 0).first<{ count: number }>();
@@ -357,6 +384,8 @@ export class D1Persistence {
       role: record.person.role,
       generation: record.person.generation,
       joinedAt: record.person.joinedAt,
+      joinedYear: record.person.joinedYear,
+      joinedSeason: record.person.joinedSeason,
       mentorId: record.person.mentorId,
       tags: record.person.tags,
       mentor: mentor ? toSummary(mentor) : null,
@@ -382,6 +411,9 @@ export class D1Persistence {
       version: record.version,
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
+      permissions: {
+        ...permissions,
+      },
     };
   }
 
@@ -616,7 +648,7 @@ export class D1Persistence {
     const credentials = await createPasswordFields(input.password);
     const accountId = `account-${crypto.randomUUID()}`;
     const year = new Date(now).getUTCFullYear();
-    const joinedAt = new Date(now).toISOString().slice(0, 10);
+    const joinedAt = joinSeasonAt(new Date(now)).joinedAt;
     const sessionToken = createOpaqueToken("session");
     const sessionTokenHash = await hashToken(sessionToken);
     const expiresAt = new Date(now + SESSION_TTL_MS).toISOString();
@@ -725,13 +757,13 @@ export class D1Persistence {
     return { state: "updated" } as const;
   }
 
-  async updateProfile(personId: string, input: { version: number; bio?: string; destination?: Person["destination"]; memberType?: Person["memberType"] | null; groupRole?: Person["groupRole"]; motto?: string | null; coverTheme?: string | null; contactEmail?: string | null; education?: string | null; experience?: string | null; skills?: string[]; links?: { label: string; url: string }[] }) {
+  async updateProfile(personId: string, input: { version: number; bio?: string; destination?: Person["destination"]; birthday?: string | null; joinedYear?: number; joinedSeason?: JoinSeason; motto?: string | null; coverTheme?: string | null; contactEmail?: string | null; education?: string | null; experience?: string | null; skills?: string[]; links?: { label: string; url: string }[] }) {
     const assignments: string[] = [];
     const values: unknown[] = [];
     if (input.bio !== undefined) { assignments.push("bio = ?"); values.push(input.bio); }
     if ("destination" in input) { assignments.push("destination = ?"); values.push(input.destination ?? null); }
-    if ("memberType" in input) { assignments.push("member_type = ?"); values.push(input.memberType ?? "formal"); }
-    if ("groupRole" in input) { assignments.push("group_role = ?"); values.push(input.groupRole ?? null); }
+    if ("birthday" in input) { assignments.push("birthday = ?"); values.push(input.birthday ?? null); }
+    if (input.joinedYear !== undefined && input.joinedSeason !== undefined) { assignments.push("joined_at = ?"); values.push(joinedAtFromSeason(input.joinedYear, input.joinedSeason)); }
     if ("motto" in input) { assignments.push("motto = ?"); values.push(input.motto || null); }
     if ("coverTheme" in input) { assignments.push("cover_theme = ?"); values.push(input.coverTheme ?? null); }
     if ("contactEmail" in input) { assignments.push("contact_email = ?"); values.push(input.contactEmail ?? null); }
@@ -746,6 +778,53 @@ export class D1Persistence {
     return this.personDetail(personId);
   }
 
+  async membershipPermissions(actorPersonId: string, targetPersonId: string) {
+    const row = await this.db.prepare(`
+      SELECT target.mentor_id AS mentorId, COALESCE(target.cohort_year, target_cohort.year) AS targetCohortYear,
+        COALESCE(actor.cohort_year, actor_cohort.year) AS actorCohortYear, actor.group_role AS actorGroupRole
+      FROM people target
+      LEFT JOIN cohorts target_cohort ON target_cohort.id = target.cohort_id
+      LEFT JOIN people actor ON actor.id = ?
+      LEFT JOIN cohorts actor_cohort ON actor_cohort.id = actor.cohort_id
+      WHERE target.id = ?
+    `).bind(actorPersonId, targetPersonId).first<{
+      mentorId: string | null; targetCohortYear: number | null; actorCohortYear: number | null; actorGroupRole: Person["groupRole"];
+    }>();
+    if (!row) return null;
+    return membershipPermissionsFor({ id: actorPersonId, cohortYear: row.actorCohortYear, groupRole: row.actorGroupRole }, {
+      mentorId: row.mentorId, cohortYear: row.targetCohortYear,
+    });
+  }
+
+  async updateMembership(actorPersonId: string, targetPersonId: string, input: {
+    version: number; memberType?: Person["memberType"]; groupRole?: Person["groupRole"];
+  }, viewerUserId?: string) {
+    const permissions = await this.membershipPermissions(actorPersonId, targetPersonId);
+    if (!permissions) return { state: "not-found" } as const;
+    if (input.memberType !== undefined && !permissions.canEditMemberType) return { state: "member-type-forbidden" } as const;
+    if ("groupRole" in input && !permissions.canEditGroupRole) return { state: "group-role-forbidden" } as const;
+    const assignments: string[] = [];
+    const values: unknown[] = [];
+    if (input.memberType !== undefined) { assignments.push("member_type = ?"); values.push(input.memberType); }
+    if ("groupRole" in input) { assignments.push("group_role = ?"); values.push(input.groupRole ?? null); }
+    if (!assignments.length) return { state: "no-changes" } as const;
+    assignments.push("version = version + 1", "updated_at = datetime('now')");
+    const requiresDirectMentor = input.memberType !== undefined;
+    const authorizationSql = requiresDirectMentor
+      ? "mentor_id = ?"
+      : `(mentor_id = ? OR EXISTS (
+          SELECT 1 FROM people actor
+          LEFT JOIN cohorts actor_cohort ON actor_cohort.id = actor.cohort_id
+          WHERE actor.id = ? AND actor.group_role IN ('leader', 'vice_leader')
+            AND COALESCE(actor.cohort_year, actor_cohort.year) = COALESCE(people.cohort_year, (SELECT year FROM cohorts WHERE id = people.cohort_id)) - 1
+        ))`;
+    const authorizationValues = requiresDirectMentor ? [actorPersonId] : [actorPersonId, actorPersonId];
+    const result = await this.db.prepare(`UPDATE people SET ${assignments.join(", ")} WHERE id = ? AND version = ? AND ${authorizationSql}`)
+      .bind(...values, targetPersonId, input.version, ...authorizationValues).run();
+    if ((result.meta.changes ?? 0) === 0) return { state: "version-conflict" } as const;
+    return { state: "updated", person: await this.personDetail(targetPersonId, { userId: viewerUserId, personId: actorPersonId }) } as const;
+  }
+
   async updateMentoredStudent(mentorId: string, personId: string, input: {
     version: number;
     name?: string;
@@ -753,6 +832,9 @@ export class D1Persistence {
     memberType?: Person["memberType"];
     groupRole?: Person["groupRole"];
     status?: Person["status"];
+    birthday?: string | null;
+    joinedYear?: number;
+    joinedSeason?: JoinSeason;
   }) {
     const assignments: string[] = [];
     const values: unknown[] = [];
@@ -761,6 +843,8 @@ export class D1Persistence {
     if (input.memberType !== undefined) { assignments.push("member_type = ?"); values.push(input.memberType); }
     if ("groupRole" in input) { assignments.push("group_role = ?"); values.push(input.groupRole ?? null); }
     if (input.status !== undefined) { assignments.push("status = ?"); values.push(input.status); }
+    if ("birthday" in input) { assignments.push("birthday = ?"); values.push(input.birthday ?? null); }
+    if (input.joinedYear !== undefined && input.joinedSeason !== undefined) { assignments.push("joined_at = ?"); values.push(joinedAtFromSeason(input.joinedYear, input.joinedSeason)); }
     if (!assignments.length) return null;
     assignments.push("version = version + 1", "updated_at = datetime('now')");
     const result = await this.db.prepare(`
@@ -778,7 +862,7 @@ export class D1Persistence {
   /** Direct students of a mentor with account and claim state for the student studio. */
   async listStudents(mentorId: string, now = Date.now()) {
     const rows = await this.db.prepare(`
-      SELECT p.id AS person_id, p.name, p.member_type, p.status, p.cohort_year, p.version, p.created_at, p.joined_at,
+      SELECT p.id AS person_id, p.name, p.member_type, p.status, p.cohort_year, p.version, p.created_at, p.joined_at, p.birthday,
         p.destination, p.group_role, p.role,
         c.expires_at, c.claimed_at,
         u.id AS account_id, u.email, u.phone, u.status AS account_status, u.must_change_password, u.activated_at,
@@ -791,7 +875,7 @@ export class D1Persistence {
       ORDER BY p.created_at DESC
     `).bind(mentorId).all<{
       person_id: string; name: string; member_type: Person["memberType"]; status: Person["status"]; cohort_year: number | null;
-      version: number; created_at: string; joined_at: string | null; destination: Person["destination"]; group_role: Person["groupRole"]; role: string;
+      version: number; created_at: string; joined_at: string | null; birthday: string | null; destination: Person["destination"]; group_role: Person["groupRole"]; role: string;
       expires_at: string | null; claimed_at: string | null;
       account_id: string | null; email: string | null; phone: string | null; account_status: "active" | "disabled" | null;
       must_change_password: number | null; activated_at: string | null; student_count: number; avatar_id: string | null;
@@ -799,6 +883,7 @@ export class D1Persistence {
     return rows.results.map((row) => {
       const claimState = row.expires_at === null ? null : row.claimed_at ? "claimed" : Date.parse(row.expires_at) <= now ? "expired" : "pending";
       const activated = Boolean(row.activated_at);
+      const joined = joinSeasonFromDate(row.joined_at ?? row.created_at.slice(0, 10));
       return {
         personId: row.person_id,
         name: row.name,
@@ -812,7 +897,10 @@ export class D1Persistence {
         avatarUrl: row.avatar_id ? `/api/attachments/${row.avatar_id}` : null,
         studentCount: Number(row.student_count ?? 0),
         createdAt: row.created_at,
-        joinedAt: row.joined_at ?? row.created_at.slice(0, 10),
+        joinedAt: joined.joinedAt,
+        joinedYear: joined.joinedYear,
+        joinedSeason: joined.joinedSeason,
+        birthday: row.birthday,
         expiresAt: row.expires_at ?? "",
         claimedAt: row.claimed_at,
         account: row.account_id ? {
@@ -897,6 +985,7 @@ export class D1Persistence {
     cohortYear: number | null;
     memberType: "formal" | "probationary";
     joinedAt: string | null;
+    birthday: string | null;
   }, now = Date.now(), allowNonLineage = false) {
     const mentor = await this.db.prepare("SELECT id, relation_scope FROM people WHERE id = ?")
       .bind(mentorId).first<{ id: string; relation_scope: string }>();
@@ -928,10 +1017,10 @@ export class D1Persistence {
       this.db.prepare(`
         INSERT INTO people (
           id, name, nickname, mentor_id, cohort_id, cohort_year, relation_scope, bio,
-          is_featured, status, member_type, role, joined_at, tags_json
-        ) VALUES (?, ?, NULL, ?, NULL, ?, 'lineage', ?, 0, 'active', ?, '待认领成员', ?, '[]')
+          is_featured, status, member_type, role, joined_at, birthday, tags_json
+        ) VALUES (?, ?, NULL, ?, NULL, ?, 'lineage', ?, 0, 'active', ?, '待认领成员', ?, ?, '[]')
       `).bind(personId, input.name, mentorId, input.cohortYear,
-        "这个节点由师傅代为保留，等待本人接手账号。", input.memberType, input.joinedAt),
+        "这个节点由师傅代为保留，等待本人接手账号。", input.memberType, input.joinedAt ?? joinSeasonAt(new Date(now)).joinedAt, input.birthday),
       this.db.prepare(`INSERT INTO users (id, person_id, role, status, email, phone, display_name, password_salt, password_hash, must_change_password)
         VALUES (?, ?, 'member', 'active', ?, ?, ?, ?, ?, 1)`)
         .bind(accountId, personId, email, phone, input.name.trim(), credentials.passwordSalt, credentials.passwordHash),

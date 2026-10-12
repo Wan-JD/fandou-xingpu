@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import AuthImage from "../AuthImage.vue";
 import StarAvatar from "../StarAvatar.vue";
+import MarkdownContent from "./MarkdownContent.vue";
 import PostComposer from "./PostComposer.vue";
 import { apiRequest } from "../../lib/api";
 import { fullTime, linkify, relativeTime } from "../../lib/format";
@@ -19,10 +20,11 @@ const liking = ref(false);
 const sparkKey = ref(0);
 const menuRef = ref<HTMLElement | null>(null);
 
-const longText = computed(() => props.post.content.length > 360 || props.post.content.split("\n").length > 8);
+const isExperience = computed(() => props.post.kind === "experience");
+const longText = computed(() => !isExperience.value && (props.post.content.length > 360 || props.post.content.split("\n").length > 8));
 const tokens = computed(() => linkify(props.post.content));
 const edited = computed(() => props.post.updatedAt && props.post.updatedAt.slice(0, 16) !== props.post.createdAt.slice(0, 16));
-const imageLayout = computed(() => props.post.images.length === 1 ? "single" : props.post.images.length === 2 || props.post.images.length === 4 ? "pair" : "grid");
+const imageLayout = computed(() => props.post.images.length === 1 ? "single" : props.post.images.length === 2 || props.post.images.length === 4 ? "pair" : props.post.images.length > 9 ? "many" : "grid");
 
 async function toggleLike() {
   if (!props.token) { emit("requireAuth"); return; }
@@ -91,6 +93,7 @@ onUnmounted(() => window.removeEventListener("pointerdown", onOutside));
       <div class="post-meta">
         <strong>{{ author.name }}</strong>
         <span>
+          <b class="post-kind" :class="{ experience: isExperience }">{{ isExperience ? "经验分享" : "随手记" }}</b>
           <time :datetime="post.createdAt" :title="fullTime(post.createdAt)">{{ relativeTime(post.createdAt) }}</time>
           <template v-if="edited"> · 已编辑</template>
           · <span class="post-visibility" :title="post.visibility === 'public' ? '所有人可见' : '仅登录成员可见'">{{ post.visibility === "public" ? "公开" : "仅成员" }}</span>
@@ -110,11 +113,12 @@ onUnmounted(() => window.removeEventListener("pointerdown", onOutside));
     <PostComposer v-if="editing && token" :token="token" :post="post" @saved="onSaved" @cancel="editing = false" />
     <template v-else>
       <h3 v-if="post.title" class="post-title">{{ post.title }}</h3>
-      <p class="post-text" :class="{ clamped: longText && !expandedText }"><template v-for="(piece, index) in tokens" :key="index"><a v-if="piece.href" :href="piece.href" target="_blank" rel="noopener noreferrer nofollow">{{ piece.text }}</a><template v-else>{{ piece.text }}</template></template></p>
+      <MarkdownContent v-if="isExperience" :source="post.content" />
+      <p v-else class="post-text" :class="{ clamped: longText && !expandedText }"><template v-for="(piece, index) in tokens" :key="index"><a v-if="piece.href" :href="piece.href" target="_blank" rel="noopener noreferrer nofollow">{{ piece.text }}</a><template v-else>{{ piece.text }}</template></template></p>
       <button v-if="longText" class="post-more" type="button" @click="expandedText = !expandedText">{{ expandedText ? "收起" : "展开全文" }}</button>
       <div v-if="post.images.length" class="post-images" :class="`layout-${imageLayout}`">
         <button v-for="(image, index) in post.images" :key="image.id" class="post-image" type="button" :aria-label="`查看第 ${index + 1} 张图片`" @click="emit('openImage', index)">
-          <AuthImage :src="image.url" :token="token" :is-public="post.visibility === 'public'" :alt="`${author.name}的动态图片`" />
+          <AuthImage :src="image.url" :token="token" :is-public="post.visibility === 'public'" fit="contain" :alt="`${author.name}的动态图片`" />
         </button>
       </div>
     </template>
@@ -144,6 +148,8 @@ onUnmounted(() => window.removeEventListener("pointerdown", onOutside));
 .post-meta { display: grid; gap: 2px; min-width: 0; flex: 1; }
 .post-meta strong { overflow: hidden; color: var(--ink); font-size: 14px; font-weight: 500; letter-spacing: .06em; text-overflow: ellipsis; white-space: nowrap; }
 .post-meta > span { color: var(--muted); font-size: 11.5px; }
+.post-kind { display: inline-flex; margin-right: 7px; padding: 1px 6px; border-radius: 4px; background: rgba(142, 217, 208, .1); color: var(--aqua); font-size: 10px; font-weight: 500; letter-spacing: .06em; }
+.post-kind.experience { background: rgba(231, 201, 130, .12); color: var(--gold); }
 .post-pin { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border: 1px solid rgba(231, 201, 130, .4); border-radius: 999px; color: var(--gold); font-size: 11px; letter-spacing: .1em; }
 .post-pin svg { width: 11px; height: 11px; fill: currentColor; }
 .post-menu { position: relative; }
@@ -158,14 +164,16 @@ onUnmounted(() => window.removeEventListener("pointerdown", onOutside));
 .post-text.clamped { display: -webkit-box; -webkit-line-clamp: 8; -webkit-box-orient: vertical; overflow: hidden; }
 .post-text a { color: var(--aqua); text-decoration: underline; text-decoration-color: rgba(142, 217, 208, .4); text-underline-offset: 3px; }
 .post-more { justify-self: start; margin-top: -6px; padding: 0; border: 0; background: none; color: var(--gold); font-size: 12.5px; }
-.post-images { display: grid; gap: 6px; overflow: hidden; border-radius: 14px; }
-.post-images.layout-single { grid-template-columns: minmax(0, 1fr); max-width: 440px; }
-.post-images.layout-single .post-image { aspect-ratio: 16 / 10; }
+.post-images { display: grid; gap: 6px; overflow: hidden; width: 100%; border-radius: 14px; }
+.post-images.layout-single { grid-template-columns: minmax(0, 1fr); max-width: 620px; }
+.post-images.layout-single .post-image { min-height: 160px; max-height: 680px; }
+.post-images.layout-single .post-image :deep(.auth-image) { width: auto; max-width: 100%; height: auto; max-height: 680px; margin: 0 auto; object-fit: contain; }
 .post-images.layout-pair { grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: 520px; }
 .post-images.layout-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); max-width: 560px; }
-.post-image { aspect-ratio: 1; padding: 0; overflow: hidden; border: 0; background: rgba(3, 8, 20, .6); }
-.post-image :deep(.auth-image) { transition: transform .5s var(--ease-out), filter .3s; }
-.post-image:hover :deep(.auth-image) { transform: scale(1.04); filter: brightness(1.08); }
+.post-images.layout-many { grid-template-columns: repeat(4, minmax(0, 1fr)); max-width: 640px; }
+.post-image { aspect-ratio: 1; min-width: 0; padding: 0; overflow: hidden; border: 0; background: rgba(3, 8, 20, .72); }
+.post-image :deep(.auth-image) { transition: filter .3s; }
+.post-image:hover :deep(.auth-image) { filter: brightness(1.08); }
 .post-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-top: 10px; border-top: 1px solid rgba(145, 177, 210, .1); }
 .post-like { display: inline-flex; align-items: center; gap: 7px; min-height: 34px; padding: 5px 13px 5px 10px; border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--ink-soft); font-size: 12.5px; transition: background .2s, color .2s, border-color .2s; }
 .post-like:hover:not(:disabled) { background: rgba(231, 201, 130, .08); color: var(--gold); }
@@ -179,4 +187,5 @@ onUnmounted(() => window.removeEventListener("pointerdown", onOutside));
 .post-error { margin: 0; color: #ffcfc4; font-size: 12px; }
 @keyframes post-in { from { opacity: 0; transform: translateY(8px); } }
 @keyframes like-burst { from { opacity: 1; transform: scale(.4); } to { opacity: 0; transform: scale(1.6); } }
+@media (max-width: 560px) { .post-images.layout-many { grid-template-columns: repeat(3, minmax(0, 1fr)); } .post-images.layout-single .post-image { min-height: 120px; } }
 </style>
