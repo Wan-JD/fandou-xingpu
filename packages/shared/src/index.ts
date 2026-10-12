@@ -1,5 +1,6 @@
 export * from "./types.ts";
 export * from "./domain.ts";
+export * from "./account-identifiers.ts";
 export {
   idSchema,
   relationScopeSchema,
@@ -20,6 +21,7 @@ export {
   personSearchQuerySchema,
   personUpdateSchema,
   sessionLoginSchema,
+  accountIdentifierSchema,
   sessionRegisterSchema,
   achievementInputSchema,
   idParamsSchema,

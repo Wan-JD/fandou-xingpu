@@ -16,7 +16,6 @@ export type Session = {
 
 export type LoginResult =
   | { status: "success"; session: Session }
-  | { status: "ambiguous" }
   | { status: "invalid" }
   | { status: "rate_limited"; retryAfterSeconds: number };
 
@@ -24,13 +23,7 @@ export type LoginResult =
 // Keep the derivation within that platform limit so login works in production.
 const PASSWORD_ITERATIONS = 100_000;
 export const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
-export const normalizeEmail = (email: string) => email.trim().toLocaleLowerCase();
-/** Store phone identifiers consistently so formatted input matches. */
-export function normalizePhone(phone: string) {
-  const value = phone.trim().replace(/[\s()-]/g, "");
-  if (value.startsWith("+86")) return value.slice(3).replace(/\D/g, "");
-  return value.replace(/[^\d+]/g, "");
-}
+export { normalizeEmail, normalizePhone } from "../../../packages/shared/src/account-identifiers.ts";
 const bytesToHex = (bytes: Uint8Array) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 const hexToBytes = (hex: string) => Uint8Array.from(hex.match(/.{2}/g) ?? [], (byte) => Number.parseInt(byte, 16));
 

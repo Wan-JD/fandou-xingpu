@@ -34,6 +34,11 @@ async function login(email, password) {
 
 assert.equal((await request("/api/health")).response.status, 200);
 assert.equal((await request("/api/admin/members")).response.status, 401);
+for (const invalidIdentifier of ["wan jundi", "not-an-email", "123456", "12345678901", "+86 123 4567 8901"]) {
+  const rejected = await request("/api/session/login", { method: "POST", body: { identifier: invalidIdentifier, password: adminPassword } });
+  assert.equal(rejected.response.status, 400, `invalid login identifier was accepted: ${invalidIdentifier}`);
+  assert.equal(rejected.payload.error.code, "VALIDATION_ERROR");
+}
 
 const admin = await login(adminEmail, adminPassword);
 assert.equal(admin.user.role, "admin");
@@ -42,7 +47,7 @@ assert.equal(admin.user.role, "admin");
 const adminInvite = await request("/api/invites", { token: admin.token, method: "POST", body: {} });
 assert.equal(adminInvite.response.status, 201, JSON.stringify(adminInvite.payload));
 const adminPlaceholder = await request("/api/me/placeholder-students", { token: admin.token, method: "POST", body: {
-  name: `Admin student ${runId}`, cohortYear: 2099, memberType: "probationary",
+  name: `Admin student ${runId}`, loginIdentifier: `admin-student-${runId}@example.com`, cohortYear: 2099, memberType: "probationary",
 } });
 assert.equal(adminPlaceholder.response.status, 201, JSON.stringify(adminPlaceholder.payload));
 const ordinaryEmail = `ordinary-${runId}@example.com`;
@@ -111,7 +116,7 @@ assert.equal(mentorMembership.payload.data.memberType, "probationary");
 assert.equal(mentorMembership.payload.data.groupRole, "vice_leader");
 
 const placeholder = await request("/api/me/placeholder-students", { token: memberSession.token, method: "POST", body: {
-  name: `待认领 ${runId}`, nickname: "挂名节点", memberType: "probationary", cohortId,
+  name: `待认领 ${runId}`, nickname: "挂名节点", loginIdentifier: `placeholder-${runId}@example.com`, memberType: "probationary", cohortId,
 } });
 assert.equal(placeholder.response.status, 201, JSON.stringify(placeholder.payload));
 assert.match(placeholder.payload.data.claimPath, /^\/claim\?token=claim_/);
@@ -335,6 +340,8 @@ assert.ok(claimedStudent?.account?.activated, "claimed students are activated");
 assert.equal((await request(`/api/me/students/${claimedStudent.personId}/reset-password`, { token: memberSession.token, method: "POST" })).response.status, 409, "activated accounts cannot be reset by the mentor");
 assert.ok(studio.payload.data.invites.some((item) => item.state === "accepted"));
 const freshEmail = `fresh-${runId}@example.com`;
+const missingIdentifier = await request("/api/me/placeholder-students", { token: memberSession.token, method: "POST", body: { name: `No identifier ${runId}`, memberType: "formal", cohortYear: 2099 } });
+assert.equal(missingIdentifier.response.status, 400, "placeholder accounts require an email or mobile number");
 const freshStudent = await request("/api/me/placeholder-students", { token: memberSession.token, method: "POST", body: { name: `Fresh ${runId}`, loginIdentifier: freshEmail, memberType: "formal", cohortYear: 2099 } });
 assert.equal(freshStudent.response.status, 201, JSON.stringify(freshStudent.payload));
 const freshRow = (await request("/api/me/students", { token: memberSession.token })).payload.data.students.find((item) => item.personId === freshStudent.payload.data.person.id);
@@ -359,7 +366,7 @@ assert.equal((await request(`/api/invites/${encodeURIComponent(pendingInvite.pay
 const sameCohort = await request("/api/admin/members", { token: admin.token, method: "POST", body: { name: `Same cohort ${runId}`, cohortYear: 2096, mentorId: parentId, status: "active", destination: null } });
 assert.equal(sameCohort.response.status, 409, "a mentor cannot take a student from the same cohort");
 assert.equal(sameCohort.payload.error.code, "COHORT_ORDER");
-const sameCohortPlaceholder = await request("/api/me/placeholder-students", { token: memberSession.token, method: "POST", body: { name: `Same cohort placeholder ${runId}`, cohortYear: 2097, memberType: "formal" } });
+const sameCohortPlaceholder = await request("/api/me/placeholder-students", { token: memberSession.token, method: "POST", body: { name: `Same cohort placeholder ${runId}`, loginIdentifier: `same-cohort-${runId}@example.com`, cohortYear: 2097, memberType: "formal" } });
 assert.equal(sameCohortPlaceholder.response.status, 409);
 const parentNow = (await request("/api/admin/members", { token: admin.token })).payload.data.find((item) => item.id === parentId);
 assert.equal((await request(`/api/admin/members/${parentId}`, { token: admin.token, method: "PATCH", body: { version: parentNow.version, cohortYear: 2097 } })).response.status, 409, "a mentor cannot move into their student's cohort");

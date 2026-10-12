@@ -11,6 +11,7 @@ import ArticleEditor from "./components/posts/ArticleEditor.vue";
 import ArticleView from "./components/posts/ArticleView.vue";
 import { canLeave } from "./lib/navigation";
 import { apiErrorMessage } from "./lib/api";
+import { isValidAccountIdentifier } from "./lib/accountIdentifier";
 import {
   academicGrade, destinationLabels, formatCohort, groupRoleLabels, membershipLabels,
   normaliseNode, relationLabel, type Cohort, type Person, type SessionUser, type Tone,
@@ -169,10 +170,15 @@ function closeAuth() {
 }
 async function submitAuth() {
   if (authMode.value !== "login") return;
+  const identifier = authForm.value.identifier.trim();
+  if (!isValidAccountIdentifier(identifier)) {
+    authError.value = "请输入有效的邮箱或手机号";
+    return;
+  }
   authLoading.value = true;
   authError.value = null;
   try {
-    const response = await fetch("/api/session/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(authForm.value) });
+    const response = await fetch("/api/session/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ identifier, password: authForm.value.password }) });
     if (!response.ok) throw new Error(await apiErrorMessage(response, "登录失败"));
     const payload = await response.json() as { data?: { token?: string; user?: SessionUser } };
     if (!payload.data?.token || !payload.data.user) throw new Error("会话数据不完整");
@@ -462,8 +468,8 @@ onUnmounted(() => {
         </div>
         <form v-if="authMode === 'login'" class="auth-form" @submit.prevent="submitAuth">
           <label class="form-field">
-            <span>邮箱、手机号或姓名</span>
-            <input v-model.trim="authForm.identifier" type="text" maxlength="254" autocomplete="username" required />
+            <span>邮箱或手机号</span>
+            <input v-model="authForm.identifier" type="text" maxlength="254" autocomplete="username" placeholder="请输入邮箱或手机号" required />
           </label>
           <label class="form-field">
             <span>密码</span>

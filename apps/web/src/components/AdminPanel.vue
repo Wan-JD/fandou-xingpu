@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { canRecordDestination, cohortOrderValid } from "@fandou-xingpu/shared";
+import { validateAccountContacts } from "../lib/accountIdentifier";
 
 type Member = {
   id: string; name: string; cohort_id: string | null; cohort_label: string | null; cohort_year: number | null;
@@ -187,7 +188,10 @@ async function resetPassword(member: Member) {
 }
 
 async function createAccount() {
-  const ok = await mutate("account-new", () => api("/accounts", { method: "POST", body: JSON.stringify(accountForm.value) }), "账号已创建");
+  const contactError = validateAccountContacts(accountForm.value.email, accountForm.value.phone);
+  if (contactError) { failure.value = contactError; return; }
+  const payload = { ...accountForm.value, email: accountForm.value.email.trim(), phone: accountForm.value.phone.trim() };
+  const ok = await mutate("account-new", () => api("/accounts", { method: "POST", body: JSON.stringify(payload) }), "账号已创建");
   if (ok) accountForm.value = { personId: "", email: "", phone: "", password: "", role: "member" };
 }
 
@@ -266,7 +270,7 @@ onMounted(loadAll);
             <div class="member-summary"><strong>{{ member.name }}</strong><span>{{ member.cohort_label ?? "未分级" }} · {{ member.status === "active" ? "在读" : "毕业" }} · {{ member.member_type === "probationary" ? "预备组员" : "正式组员" }}<template v-if="member.group_role"> · {{ groupRoleText[member.group_role] }}</template> · {{ member.mentor_name ? `师从 ${member.mentor_name}` : "无师傅" }}</span></div>
             <div class="account-summary">
               <template v-if="member.account_id">
-                <span>{{ member.email ?? member.phone ?? "姓名登录" }} · {{ member.account_role === "admin" ? "管理员" : "成员" }} · {{ member.account_status === "active" ? "已启用" : "已停用" }}</span>
+                <span>{{ member.email ?? member.phone ?? "未设置登录标识" }} · {{ member.account_role === "admin" ? "管理员" : "成员" }} · {{ member.account_status === "active" ? "已启用" : "已停用" }}</span>
                 <select :value="member.account_role ?? 'member'" aria-label="账号权限" :disabled="saving === `role-${member.account_id}`" @change="setAccountRole(member, ($event.target as HTMLSelectElement).value as 'member' | 'admin')"><option value="member">成员</option><option value="admin">管理员</option></select>
                 <button type="button" :disabled="saving === `account-${member.account_id}`" @click="setAccountStatus(member)">{{ member.account_status === "active" ? "停用" : "启用" }}</button>
                 <button type="button" :disabled="saving === `delete-account-${member.account_id}`" @click="deleteAccount(member)">删除账号</button>

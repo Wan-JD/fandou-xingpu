@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { isValidEmail, isValidPhone, normalizeEmail, normalizePhone } from "../../../packages/shared/src/account-identifiers.ts";
 import { persistence, type PersistentInvite } from "./persistence.ts";
 import type { Env } from "./types";
 
@@ -110,10 +111,13 @@ inviteApi.post("/:token/accept", async (c) => {
   const body = await c.req.json().catch(() => null) as { name?: unknown; nickname?: unknown; email?: unknown; phone?: unknown; password?: unknown } | null;
   const name = typeof body?.name === "string" ? body.name.trim() : "";
   const nickname = typeof body?.nickname === "string" && body.nickname.trim() ? body.nickname.trim() : null;
-  const email = typeof body?.email === "string" ? body.email.trim().toLocaleLowerCase() : "";
-  const phone = typeof body?.phone === "string" && body.phone.trim() ? body.phone.trim() : null;
+  const rawEmail = typeof body?.email === "string" ? body.email : "";
+  const rawPhone = typeof body?.phone === "string" ? body.phone : "";
+  const email = rawEmail.trim() ? normalizeEmail(rawEmail) : "";
+  const phone = rawPhone.trim() ? normalizePhone(rawPhone) : null;
   const password = typeof body?.password === "string" ? body.password : "";
-  if (!name || name.length > 100 || (nickname?.length ?? 0) > 100 || (!email && !phone) || (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) || (phone && phone.length > 30) || password.length < 6 || password.length > 100) {
+  if (!name || name.length > 100 || (nickname?.length ?? 0) > 100 || (!email && !phone)
+    || (rawEmail.trim() && !isValidEmail(rawEmail)) || (rawPhone.trim() && !isValidPhone(rawPhone)) || password.length < 6 || password.length > 100) {
     return apiError(400, "INVALID_REGISTRATION", "请检查姓名、邮箱、手机号和密码");
   }
   if (!c.env?.DB) return apiError(503, "DATABASE_UNAVAILABLE", "Authentication database is not configured");

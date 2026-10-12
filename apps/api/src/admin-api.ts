@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { createPasswordFields, normalizeEmail, normalizePhone } from "./session.ts";
+import { isValidEmail, isValidPhone } from "../../../packages/shared/src/account-identifiers.ts";
 import { persistence } from "./persistence.ts";
 import { canRecordDestination, cohortOrderValid, isValidDateOnly, joinedAtFromSeason, joinSeasonAt } from "../../../packages/shared/src/domain.ts";
 import type { Env } from "./types.ts";
@@ -554,11 +555,14 @@ adminApi.get("/audit-logs", async (c) => {
 adminApi.post("/accounts", async (c) => {
   const body = await c.req.json().catch(() => null) as Record<string, unknown> | null;
   const personId = text(body?.personId, 160);
-  const email = typeof body?.email === "string" ? normalizeEmail(body.email) : "";
-  const phone = typeof body?.phone === "string" && body.phone.trim() ? normalizePhone(body.phone) : null;
+  const rawEmail = typeof body?.email === "string" ? body.email : "";
+  const rawPhone = typeof body?.phone === "string" ? body.phone : "";
+  const email = rawEmail.trim() ? normalizeEmail(rawEmail) : "";
+  const phone = rawPhone.trim() ? normalizePhone(rawPhone) : null;
   const password = typeof body?.password === "string" ? body.password : "";
   const role = body?.role === "admin" ? "admin" : "member";
-  if (!personId || ((!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) && !phone) || password.length < 8 || password.length > 100) {
+  if (!personId || (!email && !phone) || (rawEmail.trim() && !isValidEmail(rawEmail)) || (rawPhone.trim() && !isValidPhone(rawPhone))
+    || password.length < 8 || password.length > 100) {
     return error(400, "VALIDATION_ERROR", "请检查人物、邮箱或手机号和密码");
   }
   const person = await c.env.DB!.prepare("SELECT id, name FROM people WHERE id = ?").bind(personId).first<{ id: string; name: string }>();

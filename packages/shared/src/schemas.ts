@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { isValidDateOnly } from "./domain.ts";
+import { isValidEmail, parseAccountIdentifier } from "./account-identifiers.ts";
 
 export const idSchema = z.string().trim().min(1).max(128);
 export const relationScopeSchema = z.enum(["lineage", "cohort_guest"]);
@@ -48,12 +49,15 @@ export const personUpdateSchema = z.object({
   }
 });
 
+export const accountIdentifierSchema = z.string().trim().min(1).max(254)
+  .refine((value) => parseAccountIdentifier(value) !== null, "请输入有效的邮箱或手机号");
+
 export const sessionLoginSchema = z.object({
-  identifier: z.string().trim().min(1).max(254).optional(),
+  identifier: accountIdentifierSchema.optional(),
   // Kept for clients deployed before the identifier field was introduced.
-  email: z.string().trim().max(254).optional(),
+  email: z.string().trim().max(254).refine(isValidEmail, "请输入有效的邮箱").optional(),
   password: z.string().min(6).max(100),
-}).strict().refine((value) => Boolean(value.identifier || value.email), { message: "请输入邮箱、手机号或姓名", path: ["identifier"] });
+}).strict().refine((value) => Boolean(value.identifier || value.email), { message: "请输入有效的邮箱或手机号", path: ["identifier"] });
 
 export const sessionRegisterSchema = z.object({
   displayName: z.string().trim().min(2).max(50),

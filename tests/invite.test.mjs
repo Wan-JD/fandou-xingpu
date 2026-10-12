@@ -35,4 +35,12 @@ test("注册资料在持久化前经过基本校验", async () => {
   const response = await jsonRequest("http://localhost/any-token/accept", "POST", { name: "", email: "invalid", password: "1" });
   assert.equal(response.status, 400);
   assert.equal((await response.json()).error.code, "INVALID_REGISTRATION");
+
+  for (const phone of ["()", "---", "123456", "12345678901", "+86 123 4567 8901"]) {
+    const invalidPhone = await jsonRequest("http://localhost/any-token/accept", "POST", {
+      name: "测试成员", email: "valid@example.com", phone, password: "secret12",
+    });
+    assert.equal(invalidPhone.status, 400, phone);
+    assert.equal((await invalidPhone.json()).error.code, "INVALID_REGISTRATION");
+  }
 });

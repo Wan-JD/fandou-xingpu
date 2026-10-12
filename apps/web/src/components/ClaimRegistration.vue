@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
+import { validateAccountContacts } from "../lib/accountIdentifier";
 
 type PersonPreview = { id: string; name: string; cohort: { label: string } | null; memberType: "formal" | "probationary"; mentor: { name: string } | null };
 const props = defineProps<{ token: string }>();
@@ -8,6 +9,7 @@ const manualToken = ref(props.token);
 const loading = ref(true);
 const submitting = ref(false);
 const error = ref("");
+const formError = ref("");
 const person = ref<PersonPreview | null>(null);
 const name = ref("");
 const email = ref("");
@@ -37,19 +39,21 @@ async function loadClaim() {
 }
 
 async function acceptClaim() {
-  if ((!email.value && !phone.value) || password.value.length < 6) return;
+  if (password.value.length < 6) return;
+  const contactError = validateAccountContacts(email.value, phone.value);
+  if (contactError) { formError.value = contactError; return; }
   submitting.value = true;
-  error.value = "";
+  formError.value = "";
   try {
     const response = await fetch(`/api/claims/${encodeURIComponent(activeToken.value)}/accept`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: name.value || undefined, email: email.value, phone: phone.value || undefined, password: password.value }),
+      body: JSON.stringify({ name: name.value.trim() || undefined, email: email.value.trim(), phone: phone.value.trim() || undefined, password: password.value }),
     });
     const payload = await response.json() as { data?: { session: { token: string } }; error?: { code?: string; message?: string } };
     if (!response.ok || !payload.data) throw new Error(errorText(payload.error?.code) || payload.error?.message);
     localStorage.setItem("fandou-session", payload.data.session.token);
     claimed.value = true;
-  } catch (cause) { error.value = cause instanceof Error ? cause.message : "认领暂时无法完成"; }
+  } catch (cause) { formError.value = cause instanceof Error ? cause.message : "认领暂时无法完成"; }
   finally { submitting.value = false; }
 }
 
@@ -86,6 +90,7 @@ onMounted(loadClaim);
       <label>邮箱（邮箱或手机号至少填写一项）<input v-model.trim="email" maxlength="254" type="email" autocomplete="email" /></label>
       <label>手机号（可选）<input v-model.trim="phone" maxlength="30" type="tel" autocomplete="tel" /></label>
       <label>密码<input v-model="password" required minlength="6" maxlength="100" type="password" autocomplete="new-password" /></label>
+      <p v-if="formError" class="form-error" role="alert">{{ formError }}</p>
       <button class="register-action" type="submit" :disabled="submitting || (!email && !phone) || password.length < 6">{{ submitting ? "正在认领" : "建立账号并认领" }}</button>
     </form>
   </section>

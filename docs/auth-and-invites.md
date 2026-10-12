@@ -14,7 +14,7 @@
 
 ## API
 
-- `POST /api/session/login`：登录，返回 8 小时 Bearer 会话。
+- `POST /api/session/login`：仅接受有效邮箱或手机号登录，返回 8 小时 Bearer 会话。邮箱去除首尾空格并转为小写；手机号可含空格、圆括号和连字符，国内号接受 `1` 开头的 11 位号码（`+86` 等价），国际号须含 `+` 国家码并符合 E.164 长度。
 - `GET /api/session`：验证当前会话。
 - `DELETE /api/session`：退出当前会话。
 - `POST /api/session/register`：固定返回 `403 INVITE_REQUIRED`，防止绕过师傅邀请。
@@ -29,7 +29,7 @@
 - `POST /api/invites`：登录后为当前人物生成 7 天有效的一次性邀请。
 - `GET /api/invites/:token`：预览邀请码状态和师傅摘要。
 - `POST /api/invites/:token/accept`：提交注册资料，原子创建账号、人物和师徒关系。
-- `POST /api/me/placeholder-students`：师傅创建待认领徒弟节点并生成一次性认领链接。
+- `POST /api/me/placeholder-students`：师傅提供姓名及有效邮箱或手机号，创建待认领徒弟节点并生成一次性认领链接。历史上缺少登录标识的节点继续保留，可通过认领链接补充标识；不会再以姓名作为登录账号。
 - `GET /api/me/placeholder-students`：查看自己创建的挂名节点状态，不返回历史明文密钥。
 - `POST /api/me/placeholder-students/:personId/claim`：为尚未认领的节点重新生成链接，旧链接立即失效。
 - `GET /api/claims/:token`：查看待认领节点摘要。

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
+import { validateAccountContacts } from "../lib/accountIdentifier";
 
 type Mentor = { id: string; name: string; cohort: { label: string } | null };
 const props = defineProps<{ token: string }>();
@@ -8,6 +9,7 @@ const manualToken = ref(props.token);
 const loading = ref(true);
 const submitting = ref(false);
 const error = ref("");
+const formError = ref("");
 const mentor = ref<Mentor | null>(null);
 const name = ref("");
 const email = ref("");
@@ -47,14 +49,16 @@ async function loadInvite() {
 }
 
 async function acceptInvite() {
-  if (!name.value.trim() || (!email.value.trim() && !phone.value.trim()) || password.value.length < 6) return;
+  if (!name.value.trim() || password.value.length < 6) return;
+  const contactError = validateAccountContacts(email.value, phone.value);
+  if (contactError) { formError.value = contactError; return; }
   submitting.value = true;
-  error.value = "";
+  formError.value = "";
   try {
     const response = await fetch(`/api/invites/${encodeURIComponent(activeToken.value)}/accept`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: name.value, email: email.value, phone: phone.value || undefined, password: password.value }),
+      body: JSON.stringify({ name: name.value.trim(), email: email.value.trim(), phone: phone.value.trim() || undefined, password: password.value }),
     });
     const payload = await response.json() as { data?: { member: { name: string }; mentor: Mentor; session: { token: string } }; error?: { code?: string } };
     if (!response.ok || !payload.data) throw new Error(errorText(payload.error?.code));
@@ -62,7 +66,7 @@ async function acceptInvite() {
     acceptedName.value = payload.data.member.name;
     localStorage.setItem("fandou-session", payload.data.session.token);
   } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : errorText();
+    formError.value = cause instanceof Error ? cause.message : errorText();
   } finally {
     submitting.value = false;
   }
@@ -115,6 +119,7 @@ onMounted(loadInvite);
       <label>邮箱（邮箱或手机号至少填写一项）<input v-model.trim="email" maxlength="254" type="email" autocomplete="email" /></label>
       <label>手机号（可选）<input v-model.trim="phone" maxlength="30" type="tel" autocomplete="tel" /></label>
       <label>密码<input v-model="password" required minlength="6" maxlength="100" type="password" autocomplete="new-password" /></label>
+      <p v-if="formError" class="form-error" role="alert">{{ formError }}</p>
       <button class="register-action" type="submit" :disabled="submitting || !name || (!email && !phone) || password.length < 6">{{ submitting ? "正在建立账号" : "接受邀请并注册" }}</button>
     </form>
   </section>

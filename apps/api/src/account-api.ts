@@ -14,13 +14,12 @@ const errorResponse = (message: string, code: string, status: 400 | 401 | 403 | 
 
 accountApi.post("/session/login", async (c) => {
   const parsed = sessionLoginSchema.safeParse(await c.req.json().catch(() => null));
-  if (!parsed.success) return errorResponse("请填写邮箱、手机号或姓名，以及密码", "VALIDATION_ERROR", 400, parsed.error.flatten().fieldErrors as Record<string, string[]>);
+  if (!parsed.success) return errorResponse("请输入有效的邮箱或手机号，以及密码", "VALIDATION_ERROR", 400, parsed.error.flatten().fieldErrors as Record<string, string[]>);
   if (!c.env?.DB) return errorResponse("认证数据库未配置", "DATABASE_UNAVAILABLE", 503);
   const result = await persistence(c.env.DB).login(parsed.data.identifier ?? parsed.data.email ?? "", parsed.data.password);
   if (result.status === "rate_limited") {
     return errorResponse("尝试次数过多，请稍后再试", "LOGIN_RATE_LIMITED", 429, undefined, { "Retry-After": String(result.retryAfterSeconds) });
   }
-  if (result.status === "ambiguous") return errorResponse("这个姓名对应多个账号，请改用邮箱或手机号登录", "AMBIGUOUS_NAME", 409);
   if (result.status === "invalid") return errorResponse("登录标识或密码不正确", "INVALID_CREDENTIALS", 401);
   return c.json({ data: result.session });
 });
@@ -132,7 +131,7 @@ accountApi.post("/me/placeholder-students", async (c) => {
   const joinedAt = hasJoinParts && Number.isInteger(joinedYear) && joinedYear >= 1900 && joinedYear <= 2200 && joinedSeason
     ? joinedAtFromSeason(joinedYear, joinedSeason)
     : legacyJoinedAt ?? joinSeasonAt().joinedAt;
-  if (!name || name.length > 100 || loginIdentifier.length > 254 || !memberType
+  if (!name || name.length > 100 || !loginIdentifier || loginIdentifier.length > 254 || !memberType
     || (hasJoinParts && (!Number.isInteger(joinedYear) || joinedYear < 1900 || joinedYear > 2200 || !joinedSeason))
     || birthday === undefined || (body?.joinedAt && !legacyJoinedAt)
     || (cohortYear !== null && (!Number.isInteger(cohortYear) || cohortYear < 1900 || cohortYear > 2200))) {

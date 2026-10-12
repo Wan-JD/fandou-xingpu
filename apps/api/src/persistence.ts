@@ -1,5 +1,6 @@
 import type { Cohort, Person, TreeNode } from "./types.ts";
 import { cohortOrderValid, joinSeasonAt, joinSeasonFromDate, joinedAtFromSeason, type JoinSeason } from "../../../packages/shared/src/domain.ts";
+import { parseAccountIdentifier } from "../../../packages/shared/src/account-identifiers.ts";
 import { analyzeLineage } from "./lib/lineage.ts";
 import {
   SESSION_TTL_MS,
@@ -578,18 +579,9 @@ export class D1Persistence {
   }
 
   async login(identifier: string, password: string, now = Date.now()): Promise<LoginResult> {
-    const trimmedIdentifier = identifier.trim();
-    const phoneCandidate = normalizePhone(trimmedIdentifier);
-    const kind = trimmedIdentifier.includes("@")
-      ? "email"
-      : /^[+\d\s()-]+$/.test(trimmedIdentifier) && /^\+?\d{6,20}$/.test(phoneCandidate)
-        ? "phone"
-        : "name";
-    const normalizedIdentifier = kind === "email"
-      ? normalizeEmail(trimmedIdentifier)
-      : kind === "phone"
-        ? phoneCandidate
-        : trimmedIdentifier.toLocaleLowerCase();
+    const parsedIdentifier = parseAccountIdentifier(identifier);
+    if (!parsedIdentifier) return { status: "invalid" };
+    const { kind, normalized: normalizedIdentifier } = parsedIdentifier;
     const attemptKey = `${kind}:${normalizedIdentifier}`;
     const attempt = await this.db.prepare("SELECT failures, window_started_at AS windowStartedAt, blocked_until AS blockedUntil FROM login_attempts WHERE email = ?")
       .bind(attemptKey).first<{ failures: number; windowStartedAt: string; blockedUntil: string | null }>();
@@ -599,11 +591,7 @@ export class D1Persistence {
     if (attempt?.blockedUntil && Date.parse(attempt.blockedUntil) > now) {
       return { status: "rate_limited", retryAfterSeconds: Math.ceil((Date.parse(attempt.blockedUntil) - now) / 1000) };
     }
-    const lookup = kind === "email"
-      ? "lower(u.email) = ?"
-      : kind === "phone"
-        ? "u.phone = ?"
-        : "lower(p.name) = ?";
+    const lookup = kind === "email" ? "lower(u.email) = ?" : "u.phone = ?";
     const matches = await this.db.prepare(`
       SELECT u.id, u.email, u.phone, u.display_name, u.person_id, u.role,
         u.password_salt, u.password_hash, u.must_change_password
@@ -612,7 +600,6 @@ export class D1Persistence {
       ORDER BY u.created_at, u.id
       LIMIT 2
     `).bind(normalizedIdentifier).all<AccountRow>();
-    if (matches.results.length > 1) return { status: "ambiguous" };
     const account = matches.results[0] ?? null;
     if (!account || !await verifyPassword(password, account.password_salt, account.password_hash)) {
       failures += 1;
@@ -898,6 +885,7 @@ export class D1Persistence {
     return rows.results.map((row) => {
       const claimState = row.expires_at === null ? null : row.claimed_at ? "claimed" : Date.parse(row.expires_at) <= now ? "expired" : "pending";
       const activated = Boolean(row.activated_at);
+      const accountIdentifier = parseAccountIdentifier(row.email ?? row.phone ?? "");
       const joined = joinSeasonFromDate(row.joined_at ?? row.created_at.slice(0, 10));
       return {
         personId: row.person_id,
@@ -919,11 +907,11 @@ export class D1Persistence {
         expiresAt: row.expires_at ?? "",
         claimedAt: row.claimed_at,
         account: row.account_id ? {
-          identifier: row.email ?? row.phone ?? row.name,
+          identifier: accountIdentifier?.normalized ?? "",
           status: row.account_status ?? "active",
           activated,
           mustChangePassword: Boolean(row.must_change_password),
-          canResetPassword: !activated && row.account_status === "active",
+          canResetPassword: Boolean(accountIdentifier) && !activated && row.account_status === "active",
         } : null,
         claim: claimState ? { state: claimState, expiresAt: row.expires_at } : null,
         // Legacy summary kept for older clients of /me/placeholder-students.
@@ -938,11 +926,12 @@ export class D1Persistence {
    */
   async resetStudentInitialPassword(mentorId: string, personId: string) {
     const account = await this.db.prepare(`
-      SELECT u.id, u.email, u.phone, p.name
+      SELECT u.id, u.email, u.phone
       FROM users u JOIN people p ON p.id = u.person_id
       WHERE u.person_id = ? AND p.mentor_id = ? AND u.status = 'active' AND u.activated_at IS NULL
-    `).bind(personId, mentorId).first<{ id: string; email: string | null; phone: string | null; name: string }>();
-    if (!account) return { state: "not-allowed" } as const;
+    `).bind(personId, mentorId).first<{ id: string; email: string | null; phone: string | null }>();
+    const identifier = parseAccountIdentifier(account?.email ?? account?.phone ?? "");
+    if (!account || !identifier) return { state: "not-allowed" } as const;
     const temporaryPassword = `X${crypto.randomUUID().replace(/-/g, "").slice(0, 11)}!`;
     const credentials = await createPasswordFields(temporaryPassword);
     const result = await this.db.batch([
@@ -951,7 +940,7 @@ export class D1Persistence {
       this.db.prepare("DELETE FROM auth_sessions WHERE user_id = ?").bind(account.id),
     ]);
     if ((result[0]?.meta.changes ?? 0) === 0) return { state: "not-allowed" } as const;
-    return { state: "reset", account: { identifier: account.email ?? account.phone ?? account.name, temporaryPassword, mustChangePassword: true } } as const;
+    return { state: "reset", account: { identifier: identifier.normalized, temporaryPassword, mustChangePassword: true } } as const;
   }
 
   async listMentorInvites(mentorId: string, now = Date.now()) {
@@ -1002,6 +991,8 @@ export class D1Persistence {
     joinedAt: string | null;
     birthday: string | null;
   }, now = Date.now(), allowNonLineage = false) {
+    const parsedIdentifier = parseAccountIdentifier(input.loginIdentifier ?? "");
+    if (!parsedIdentifier) return { state: "invalid-identifier" } as const;
     const mentor = await this.db.prepare("SELECT p.id, p.relation_scope, COALESCE(p.cohort_year, c.year) AS cohort_year FROM people p LEFT JOIN cohorts c ON c.id = p.cohort_id WHERE p.id = ?")
       .bind(mentorId).first<{ id: string; relation_scope: string; cohort_year: number | null }>();
     if (!mentor) return { state: "mentor-not-found" } as const;
@@ -1011,20 +1002,15 @@ export class D1Persistence {
     // lineage). Regular members remain restricted to lineage mentors.
     if (mentor.relation_scope !== "lineage" && !allowNonLineage) return { state: "mentor-not-lineage" } as const;
     const personId = `placeholder-${crypto.randomUUID().replace(/-/g, "").slice(0, 20)}`;
-    const supplied = input.loginIdentifier?.trim() ?? "";
-    const isEmail = supplied.includes("@");
-    const normalizedPhone = normalizePhone(supplied);
-    const isPhone = !isEmail && /^\+?\d{6,20}$/.test(normalizedPhone);
-    if (supplied && !isEmail && !isPhone) return { state: "invalid-identifier" } as const;
-    const email = isEmail ? normalizeEmail(supplied) : null;
-    const phone = isPhone ? normalizedPhone : null;
+    const email = parsedIdentifier.kind === "email" ? parsedIdentifier.normalized : null;
+    const phone = parsedIdentifier.kind === "phone" ? parsedIdentifier.normalized : null;
     const duplicate = await this.db.prepare("SELECT id FROM users WHERE (email IS NOT NULL AND lower(email) = ?) OR (phone IS NOT NULL AND phone = ?)")
       .bind(email, phone).first<{ id: string }>();
     if (duplicate) return { state: "identifier-conflict" } as const;
     const accountId = `account-${crypto.randomUUID()}`;
     const temporaryPassword = `X${crypto.randomUUID().replace(/-/g, "").slice(0, 11)}!`;
     const credentials = await createPasswordFields(temporaryPassword);
-    const identifier = email ?? phone ?? input.name.trim();
+    const identifier = parsedIdentifier.normalized;
     const claimToken = createOpaqueToken("claim");
     const claimTokenHash = await hashToken(claimToken);
     const claimCreatedAt = new Date(now).toISOString();

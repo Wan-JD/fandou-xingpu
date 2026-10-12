@@ -3,6 +3,7 @@
 import { computed, onMounted, ref } from "vue";
 import StarAvatar from "../StarAvatar.vue";
 import { ApiError, apiRequest, copyText } from "../../lib/api";
+import { isValidAccountIdentifier } from "../../lib/accountIdentifier";
 import { fullTime, joinedSeasonLabel, relativeTime } from "../../lib/format";
 import { destinationLabels, formatCohort, groupRoleLabels, membershipLabels, toneFor, type Destination, type GroupRole, type MembershipType, type Person, type SessionUser, type Status, type Tone } from "../../lib/people";
 import { joinSeasonAt, type JoinSeason } from "@fandou-xingpu/shared";
@@ -97,6 +98,7 @@ function accountState(student: Student) {
     if (student.claim?.state === "expired") return { label: "认领链接已过期", tone: "warn", detail: "可以重新生成认领链接" };
     return { label: "未建立账号", tone: "muted", detail: "可请管理员建立账号" };
   }
+  if (!student.account.identifier) return { label: "未设置邮箱或手机号", tone: "warn", detail: "请通过认领链接补充" };
   if (student.account.status === "disabled") return { label: "账号已停用", tone: "muted", detail: student.account.identifier };
   if (!student.account.activated) return { label: "待首次登录", tone: "warn", detail: `登录标识：${student.account.identifier}` };
   return { label: "已激活", tone: "ok", detail: `登录标识：${student.account.identifier}` };
@@ -157,13 +159,18 @@ function openCreate() {
 }
 async function submitCreate() {
   if (!createForm.value.name.trim()) return;
+  const loginIdentifier = createForm.value.loginIdentifier.trim();
+  if (!isValidAccountIdentifier(loginIdentifier)) {
+    createError.value = "登录标识请填写有效邮箱或手机号";
+    return;
+  }
   busy.value = "create";
   createError.value = "";
   try {
     const data = await apiRequest<{ person: { id: string; version: number }; claimPath: string; loginIdentifier: string; temporaryPassword: string }>("/api/me/placeholder-students", {
       token: props.sessionToken, fallback: "徒弟账号暂时无法建立",
       json: {
-        name: createForm.value.name.trim(), loginIdentifier: createForm.value.loginIdentifier.trim() || null,
+        name: createForm.value.name.trim(), loginIdentifier,
         cohortYear: createForm.value.cohortYear ? Number(createForm.value.cohortYear) : null,
         birthday: createForm.value.birthday || null,
         joinedYear: Number(createForm.value.joinedYear), joinedSeason: createForm.value.joinedSeason,
@@ -235,7 +242,7 @@ function rotateClaim(student: Student) {
   return run(`claim-${student.personId}`, async () => {
     const data = await apiRequest<{ claimPath: string }>(`/api/me/placeholder-students/${encodeURIComponent(student.personId)}/claim`, { token: props.sessionToken, method: "POST", fallback: "认领链接暂时无法更新" });
     const url = `${window.location.origin}${data.claimPath}`;
-    credentials.value = { title: `${student.name} 的新认领链接`, identifier: student.account?.identifier ?? student.name, temporaryPassword: "", claimUrl: url };
+    credentials.value = { title: `${student.name} 的新认领链接`, identifier: student.account?.identifier ?? "", temporaryPassword: "", claimUrl: url };
     credentialCopied.value = "";
     await load();
   }, "认领链接暂时无法更新");
@@ -245,7 +252,7 @@ async function copyCredential(key: string, value: string) {
 }
 const credentialText = computed(() => credentials.value ? [
   `翻斗星谱登录地址：${window.location.origin}`,
-  `登录标识：${credentials.value.identifier}`,
+  credentials.value.identifier ? `登录标识：${credentials.value.identifier}` : "未设置邮箱或手机号，请通过认领链接补充。",
   credentials.value.temporaryPassword ? `初始密码：${credentials.value.temporaryPassword}（首次登录需修改）` : "",
   credentials.value.claimUrl ? `认领链接：${credentials.value.claimUrl}` : "",
 ].filter(Boolean).join("\n") : "");
@@ -405,7 +412,7 @@ onMounted(load);
         <p class="dialog-copy">建立后会生成初始密码和认领链接，二者都只显示一次。徒弟首次登录时必须修改密码。</p>
         <form class="auth-form" @submit.prevent="submitCreate">
           <label class="form-field"><span>姓名</span><input v-model.trim="createForm.name" maxlength="100" required autofocus /></label>
-          <label class="form-field"><span>登录标识（可选）</span><input v-model.trim="createForm.loginIdentifier" maxlength="254" placeholder="邮箱或手机号；留空则用姓名登录" autocomplete="off" /></label>
+          <label class="form-field"><span>登录邮箱或手机号</span><input v-model="createForm.loginIdentifier" maxlength="254" placeholder="请输入邮箱或手机号" autocomplete="username" required /></label>
           <div class="dialog-row">
             <label class="form-field"><span>级别年份</span><input v-model.trim="createForm.cohortYear" type="number" :min="minStudentYear" max="2200" :title="`徒弟的级别需晚于你（${me?.cohort?.year ?? '未分级'}）`" /></label>
             <label class="form-field"><span>生日</span><input v-model="createForm.birthday" type="date" /></label>
@@ -417,7 +424,7 @@ onMounted(load);
           <p v-if="createError" class="form-error" role="alert">{{ createError }}</p>
           <div class="form-actions">
             <button class="secondary-command" type="button" :disabled="busy === 'create'" @click="createOpen = false">取消</button>
-            <button class="primary-command" type="submit" :disabled="busy === 'create' || !createForm.name">{{ busy === "create" ? "正在建立…" : "建立账号" }}</button>
+            <button class="primary-command" type="submit" :disabled="busy === 'create' || !createForm.name || !createForm.loginIdentifier.trim()">{{ busy === "create" ? "正在建立…" : "建立账号" }}</button>
           </div>
         </form>
       </section>
@@ -456,11 +463,12 @@ onMounted(load);
         <h2 id="credential-title">{{ credentials.title }}</h2>
         <p class="dialog-copy warn">以下信息只显示这一次，请现在复制并私下交给徒弟本人。</p>
         <div class="credential-list">
-          <div><span>登录标识</span><code>{{ credentials.identifier }}</code><button class="text-link" type="button" @click="copyCredential('id', credentials.identifier)">{{ credentialCopied === "id" ? "已复制" : "复制" }}</button></div>
+          <div v-if="credentials.identifier"><span>登录标识</span><code>{{ credentials.identifier }}</code><button class="text-link" type="button" @click="copyCredential('id', credentials.identifier)">{{ credentialCopied === "id" ? "已复制" : "复制" }}</button></div>
+          <div v-else><span>登录标识</span><code>未设置邮箱或手机号，请通过认领链接补充</code></div>
           <div v-if="credentials.temporaryPassword"><span>初始密码</span><code>{{ credentials.temporaryPassword }}</code><button class="text-link" type="button" @click="copyCredential('password', credentials.temporaryPassword)">{{ credentialCopied === "password" ? "已复制" : "复制" }}</button></div>
           <div v-if="credentials.claimUrl"><span>认领链接</span><code>{{ credentials.claimUrl }}</code><button class="text-link" type="button" @click="copyCredential('claim', credentials.claimUrl)">{{ credentialCopied === "claim" ? "已复制" : "复制" }}</button></div>
         </div>
-        <p class="dialog-copy">徒弟可以用初始密码登录后修改密码，也可以打开认领链接自己设置邮箱和密码，两种方式任选其一。</p>
+        <p class="dialog-copy">{{ credentials.identifier ? "徒弟可以用初始密码登录后修改密码，也可以打开认领链接自己设置邮箱和密码，两种方式任选其一。" : "徒弟需要打开认领链接，补充邮箱或手机号并设置密码。" }}</p>
         <div class="form-actions">
           <button class="secondary-command" type="button" @click="copyCredential('all', credentialText)">{{ credentialCopied === "all" ? "已复制全部" : "复制全部信息" }}</button>
           <button class="primary-command" type="button" @click="credentials = null">我已保存</button>
