@@ -11,7 +11,7 @@ type EditorMode = "write" | "preview";
 type MarkdownAction = { label: string; title: string; before: string; after: string; fallback: string; block?: boolean };
 
 const props = defineProps<{ token: string; post?: Post | null; compact?: boolean }>();
-const emit = defineEmits<{ saved: [post: Post]; cancel: [] }>();
+const emit = defineEmits<{ saved: [post: Post]; cancel: []; writeArticle: [] }>();
 
 const editing = computed(() => Boolean(props.post));
 const kind = ref<PostKind>(props.post?.kind ?? "note");
@@ -171,7 +171,9 @@ onUnmounted(() => pending.value.forEach((item) => URL.revokeObjectURL(item.previ
   <form class="composer" :class="[{ expanded, editing }, `kind-${kind}`]" @submit.prevent="submit">
     <div class="composer-kind" role="radiogroup" aria-label="动态类型">
       <button type="button" role="radio" :aria-checked="kind === 'note'" :class="{ active: kind === 'note' }" @click="setKind('note')"><strong>随手记</strong><small>简短记录</small></button>
-      <button type="button" role="radio" :aria-checked="kind === 'experience'" :class="{ active: kind === 'experience' }" @click="setKind('experience')"><strong>经验分享</strong><small>Markdown 长文</small></button>
+      <!-- Long articles get their own page with drafts, so new ones open the full editor. -->
+      <button v-if="editing && kind === 'experience'" type="button" role="radio" :aria-checked="true" class="active"><strong>经验分享</strong><small>Markdown 长文</small></button>
+      <button v-else type="button" class="write-article" @click="emit('writeArticle')"><strong>经验分享 ↗</strong><small>打开长文编辑器</small></button>
     </div>
 
     <input v-if="showTitle" v-model="title" class="composer-title" maxlength="120" :placeholder="kind === 'experience' ? '给这篇经验起个标题（可选）' : '标题（可选）'" aria-label="动态标题" />
@@ -223,6 +225,8 @@ onUnmounted(() => pending.value.forEach((item) => URL.revokeObjectURL(item.previ
 .composer-kind button strong { font-size: 12.5px; font-weight: 500; }
 .composer-kind button small { font-size: 9.5px; }
 .composer-kind button.active { background: rgba(142, 217, 208, .11); color: var(--aqua); box-shadow: inset 0 0 0 1px rgba(142, 217, 208, .18); }
+.composer-kind .write-article { color: var(--gold); }
+.composer-kind .write-article:hover { background: rgba(231, 201, 130, .08); }
 .composer-kind button:last-child.active { background: rgba(231, 201, 130, .1); color: var(--gold); box-shadow: inset 0 0 0 1px rgba(231, 201, 130, .2); }
 .composer-title, .composer-text { width: 100%; border: 0; background: transparent; color: var(--ink); outline: none; }
 .composer-title { padding: 4px 2px 8px; border-bottom: 1px solid var(--line); font-family: var(--serif); font-size: 18px; letter-spacing: .04em; }

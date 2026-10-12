@@ -23,7 +23,7 @@ export type Person = PersonSummary & {
 };
 export type SessionUser = { id: string; email?: string | null; phone?: string | null; displayName: string; personId: string; role: "member" | "admin"; mustChangePassword?: boolean };
 export type PostImage = { id: string; url: string };
-export type Post = { id: string; personId: string; kind?: "note" | "experience"; title: string | null; content: string; visibility: "public" | "members"; isPinned: boolean; images: PostImage[]; likeCount: number; likedByViewer: boolean; version: number; createdAt: string; updatedAt: string };
+export type Post = { id: string; personId: string; kind?: "note" | "experience"; status?: "draft" | "published"; publishedAt?: string | null; title: string | null; content: string; visibility: "public" | "members"; isPinned: boolean; images: PostImage[]; likeCount: number; likedByViewer: boolean; version: number; createdAt: string; updatedAt: string };
 
 export const destinationLabels: Record<Destination, string> = {
   big_tech: "大厂",

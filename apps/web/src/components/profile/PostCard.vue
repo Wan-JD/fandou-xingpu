@@ -2,14 +2,13 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import AuthImage from "../AuthImage.vue";
 import StarAvatar from "../StarAvatar.vue";
-import MarkdownContent from "./MarkdownContent.vue";
 import PostComposer from "./PostComposer.vue";
 import { apiRequest } from "../../lib/api";
-import { fullTime, linkify, relativeTime } from "../../lib/format";
+import { fullTime, inlineAttachmentIds, linkify, markdownExcerpt, readingMinutes, relativeTime } from "../../lib/format";
 import type { Post, PersonSummary, Tone } from "../../lib/people";
 
 const props = defineProps<{ post: Post; author: PersonSummary; tone: Tone; token: string | null; isOwner: boolean }>();
-const emit = defineEmits<{ updated: [post: Post]; deleted: [id: string]; openImage: [index: number]; requireAuth: [] }>();
+const emit = defineEmits<{ updated: [post: Post]; deleted: [id: string]; openImage: [index: number]; requireAuth: []; navigate: [path: string] }>();
 
 const editing = ref(false);
 const menuOpen = ref(false);
@@ -21,6 +20,18 @@ const sparkKey = ref(0);
 const menuRef = ref<HTMLElement | null>(null);
 
 const isExperience = computed(() => props.post.kind === "experience");
+// Articles are read on their own page; the feed shows a teaser with a cover.
+const articlePath = computed(() => `/posts/${encodeURIComponent(props.post.id)}`);
+const excerpt = computed(() => markdownExcerpt(props.post.content, 160));
+const cover = computed(() => {
+  const inline = [...inlineAttachmentIds(props.post.content)];
+  return props.post.images.find((image) => image.id === inline[0]) ?? props.post.images[0] ?? null;
+});
+function startEdit() {
+  menuOpen.value = false;
+  if (isExperience.value) emit("navigate", `${articlePath.value}/edit`);
+  else editing.value = true;
+}
 const longText = computed(() => !isExperience.value && (props.post.content.length > 360 || props.post.content.split("\n").length > 8));
 const tokens = computed(() => linkify(props.post.content));
 const edited = computed(() => props.post.updatedAt && props.post.updatedAt.slice(0, 16) !== props.post.createdAt.slice(0, 16));
@@ -104,17 +115,24 @@ onUnmounted(() => window.removeEventListener("pointerdown", onOutside));
         <button class="post-menu-trigger" type="button" aria-label="动态操作" :aria-expanded="menuOpen" @click="menuOpen = !menuOpen">⋯</button>
         <div v-if="menuOpen" class="post-menu-list" role="menu">
           <button type="button" role="menuitem" @click="togglePin">{{ post.isPinned ? "取消置顶" : "置顶到主页" }}</button>
-          <button type="button" role="menuitem" @click="menuOpen = false; editing = true">编辑</button>
+          <button type="button" role="menuitem" @click="startEdit">编辑</button>
           <button type="button" role="menuitem" class="danger" @click="remove">删除</button>
         </div>
       </div>
     </header>
 
     <PostComposer v-if="editing && token" :token="token" :post="post" @saved="onSaved" @cancel="editing = false" />
+    <a v-else-if="isExperience" class="article-teaser" :class="{ 'has-cover': cover }" :href="articlePath" @click.prevent="emit('navigate', articlePath)">
+      <span class="teaser-copy">
+        <h3 class="post-title">{{ post.title || "无标题经验" }}</h3>
+        <span class="teaser-excerpt">{{ excerpt }}</span>
+        <span class="teaser-meta">约 {{ readingMinutes(post.content) }} 分钟读完<template v-if="post.images.length"> · {{ post.images.length }} 张图</template><b>阅读全文 →</b></span>
+      </span>
+      <span v-if="cover" class="teaser-cover"><AuthImage :src="cover.url" :token="token" :is-public="post.visibility === 'public'" alt="文章封面" /></span>
+    </a>
     <template v-else>
       <h3 v-if="post.title" class="post-title">{{ post.title }}</h3>
-      <MarkdownContent v-if="isExperience" :source="post.content" />
-      <p v-else class="post-text" :class="{ clamped: longText && !expandedText }"><template v-for="(piece, index) in tokens" :key="index"><a v-if="piece.href" :href="piece.href" target="_blank" rel="noopener noreferrer nofollow">{{ piece.text }}</a><template v-else>{{ piece.text }}</template></template></p>
+      <p class="post-text" :class="{ clamped: longText && !expandedText }"><template v-for="(piece, index) in tokens" :key="index"><a v-if="piece.href" :href="piece.href" target="_blank" rel="noopener noreferrer nofollow">{{ piece.text }}</a><template v-else>{{ piece.text }}</template></template></p>
       <button v-if="longText" class="post-more" type="button" @click="expandedText = !expandedText">{{ expandedText ? "收起" : "展开全文" }}</button>
       <div v-if="post.images.length" class="post-images" :class="`layout-${imageLayout}`">
         <button v-for="(image, index) in post.images" :key="image.id" class="post-image" type="button" :aria-label="`查看第 ${index + 1} 张图片`" @click="emit('openImage', index)">
@@ -149,6 +167,17 @@ onUnmounted(() => window.removeEventListener("pointerdown", onOutside));
 .post-meta strong { overflow: hidden; color: var(--ink); font-size: 14px; font-weight: 500; letter-spacing: .06em; text-overflow: ellipsis; white-space: nowrap; }
 .post-meta > span { color: var(--muted); font-size: 11.5px; }
 .post-kind { display: inline-flex; margin-right: 7px; padding: 1px 6px; border-radius: 4px; background: rgba(142, 217, 208, .1); color: var(--aqua); font-size: 10px; font-weight: 500; letter-spacing: .06em; }
+.article-teaser { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; padding: 14px 16px; border: 1px solid rgba(231, 201, 130, .18); border-radius: 16px; background: rgba(3, 8, 20, .32); color: inherit; text-decoration: none; transition: border-color .25s, background .25s; }
+.article-teaser.has-cover { grid-template-columns: minmax(0, 1fr) 168px; }
+.article-teaser:hover { border-color: rgba(231, 201, 130, .45); background: rgba(231, 201, 130, .05); }
+.article-teaser:hover .post-title { color: var(--gold); }
+.teaser-copy { display: grid; align-content: start; gap: 8px; min-width: 0; }
+.teaser-copy .post-title { margin: 0; transition: color .2s; }
+.teaser-excerpt { display: -webkit-box; overflow: hidden; color: var(--ink-soft); font-size: 13.5px; line-height: 1.8; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+.teaser-meta { display: flex; flex-wrap: wrap; gap: 6px; color: var(--muted); font-size: 12px; }
+.teaser-meta b { margin-left: auto; color: var(--gold); font-weight: 500; }
+.teaser-cover { aspect-ratio: 4 / 3; overflow: hidden; border-radius: 12px; background: rgba(3, 8, 20, .6); }
+@media (max-width: 560px) { .article-teaser.has-cover { grid-template-columns: minmax(0, 1fr); } .teaser-cover { order: -1; aspect-ratio: 16 / 9; } }
 .post-kind.experience { background: rgba(231, 201, 130, .12); color: var(--gold); }
 .post-pin { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border: 1px solid rgba(231, 201, 130, .4); border-radius: 999px; color: var(--gold); font-size: 11px; letter-spacing: .1em; }
 .post-pin svg { width: 11px; height: 11px; fill: currentColor; }

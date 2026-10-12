@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import { canRecordDestination, cohortOrderValid } from "@fandou-xingpu/shared";
 
 type Member = {
   id: string; name: string; cohort_id: string | null; cohort_label: string | null; cohort_year: number | null;
@@ -37,6 +38,11 @@ const tabs: { id: Tab; label: string }[] = [
   { id: "members", label: "成员与账号" },
   { id: "invites", label: "邀请" },
 ];
+const formYear = (value: string) => value ? Number(value) : null;
+const newMemberCanRecord = computed(() => canRecordDestination({ status: memberForm.value.status as "active" | "archived", cohortYear: formYear(memberForm.value.cohortYear) }));
+const editCanRecord = computed(() => canRecordDestination({ status: editForm.value.status as "active" | "archived", cohortYear: formYear(editForm.value.cohortYear) }));
+/** Mentors must come from an earlier cohort than the student. */
+const mentorCandidates = (cohortYear: string, excludeId?: string) => members.value.filter((item) => item.id !== excludeId && cohortOrderValid(item.cohort_year, formYear(cohortYear)));
 const destinationOptions = [
   ["", "暂未填写"], ["big_tech", "大厂"], ["postgraduate_985", "985 研"],
   ["postgraduate_211", "211 研"], ["other", "其他"],
@@ -226,8 +232,8 @@ onMounted(loadAll);
         <label>进组年份<input v-model.trim="memberForm.joinedYear" type="number" min="1900" max="2200" /></label>
         <label>进组季节<select v-model="memberForm.joinedSeason"><option value="spring">春季</option><option value="autumn">秋季</option></select></label>
         <label>状态<select v-model="memberForm.status"><option value="active">在读</option><option value="archived">毕业</option></select></label>
-        <label>去向<select v-model="memberForm.destination"><option v-for="option in destinationOptions" :key="option[0]" :value="option[0]">{{ option[1] }}</option></select></label>
-        <label>师傅<select v-model="memberForm.mentorId"><option value="">无</option><option v-for="member in members" :key="member.id" :value="member.id">{{ member.name }}</option></select></label>
+        <label>去向<select v-model="memberForm.destination" :title="newMemberCanRecord ? undefined : '只有已毕业或大四成员可以登记去向'"><option v-for="option in destinationOptions" :key="option[0]" :value="option[0]" :disabled="Boolean(option[0]) && !newMemberCanRecord">{{ option[1] }}</option></select></label>
+        <label>师傅<select v-model="memberForm.mentorId"><option value="">无</option><option v-for="member in mentorCandidates(memberForm.cohortYear)" :key="member.id" :value="member.id">{{ member.name }}{{ member.cohort_year ? `（${member.cohort_year}级）` : "" }}</option></select></label>
         <button class="primary-button" type="submit" :disabled="saving === 'member-new'">新增人物</button>
       </form>
 
@@ -247,8 +253,8 @@ onMounted(loadAll);
               <label>进组年份<input v-model.trim="editForm.joinedYear" type="number" min="1900" max="2200" /></label>
               <label>进组季节<select v-model="editForm.joinedSeason"><option value="spring">春季</option><option value="autumn">秋季</option></select></label>
               <label>状态<select v-model="editForm.status"><option value="active">在读</option><option value="archived">毕业</option></select></label>
-              <label>去向<select v-model="editForm.destination"><option v-for="option in destinationOptions" :key="option[0]" :value="option[0]">{{ option[1] }}</option></select></label>
-              <label>师傅<select v-model="editForm.mentorId"><option value="">无</option><option v-for="candidate in members.filter((item) => item.id !== member.id)" :key="candidate.id" :value="candidate.id">{{ candidate.name }}</option></select></label>
+              <label>去向<select v-model="editForm.destination" :title="editCanRecord ? undefined : '只有已毕业或大四成员可以登记去向'"><option v-for="option in destinationOptions" :key="option[0]" :value="option[0]" :disabled="Boolean(option[0]) && !editCanRecord && option[0] !== member.destination">{{ option[1] }}</option></select></label>
+              <label>师傅<select v-model="editForm.mentorId"><option value="">无</option><option v-for="candidate in mentorCandidates(editForm.cohortYear, member.id)" :key="candidate.id" :value="candidate.id">{{ candidate.name }}{{ candidate.cohort_year ? `（${candidate.cohort_year}级）` : "" }}</option></select></label>
               <label class="wide-field">简介<textarea v-model="editForm.bio" maxlength="10000" rows="3"></textarea></label>
               <label>标签<input v-model.trim="editForm.tags" maxlength="1000" placeholder="以顿号或逗号分隔" /></label>
               <label>重点人物<select v-model="editForm.isFeatured"><option :value="false">否</option><option :value="true">是</option></select></label>

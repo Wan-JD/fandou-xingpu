@@ -1,13 +1,13 @@
 import { Hono } from "hono";
 import { POST_IMAGE_LIMITS, postInputSchema, postUpdateSchema } from "../../../packages/shared/src/schemas.ts";
-import type { PostKind } from "../../../packages/shared/src/types.ts";
+import type { PostKind, PostStatus } from "../../../packages/shared/src/types.ts";
 import { persistence, type ContentViewer } from "./persistence.ts";
 import type { Env } from "./types.ts";
 
-// 动态只出现在作者本人的主页；公开动态匿名可读，成员动态需要登录。
+// 动态只出现在作者本人的主页；公开动态匿名可读，成员动态需要登录，草稿只有作者本人可见。
 type PostRow = {
   id: string; personId: string; title: string | null; content: string; visibility: "public" | "members";
-  kind: PostKind;
+  kind: PostKind; status: PostStatus; publishedAt: string | null;
   isPinned: number; version: number; createdAt: string; updatedAt: string; likeCount: number; liked: number;
 };
 
@@ -38,6 +38,8 @@ export class PostStore {
       content: row.content,
       visibility: row.visibility,
       kind: row.kind,
+      status: row.status ?? "published",
+      publishedAt: row.publishedAt ?? null,
       isPinned: Boolean(row.isPinned),
       images: images.results.filter((image) => image.postId === row.id).map((image) => ({ id: image.id, url: `/api/attachments/${image.id}` })),
       likeCount: Number(row.likeCount ?? 0),
@@ -49,7 +51,7 @@ export class PostStore {
   }
 
   private select(where: string) {
-    return `SELECT p.id, p.person_id AS personId, p.title, p.content, p.visibility, p.kind, p.is_pinned AS isPinned, p.version,
+    return `SELECT p.id, p.person_id AS personId, p.title, p.content, p.visibility, p.kind, p.status, p.published_at AS publishedAt, p.is_pinned AS isPinned, p.version,
         p.created_at AS createdAt, p.updated_at AS updatedAt,
         (SELECT COUNT(*) FROM post_likes l WHERE l.post_id = p.id) AS likeCount,
         (SELECT COUNT(*) FROM post_likes l WHERE l.post_id = p.id AND l.user_id = ?) AS liked
@@ -58,7 +60,7 @@ export class PostStore {
 
   async list(personId: string, viewer: ContentViewer | undefined, offset: number, limit: number) {
     const canViewMembers = Boolean(viewer?.userId);
-    const rows = await this.db.prepare(`${this.select("p.person_id = ? AND (p.visibility = 'public' OR ? = 1)")}
+    const rows = await this.db.prepare(`${this.select("p.person_id = ? AND p.status = 'published' AND (p.visibility = 'public' OR ? = 1)")}
       ORDER BY p.is_pinned DESC, p.created_at DESC, p.id DESC LIMIT ? OFFSET ?`)
       .bind(viewer?.userId ?? "", personId, canViewMembers ? 1 : 0, limit + 1, offset).all<PostRow>();
     const items = await this.hydrate(rows.results.slice(0, limit));
@@ -68,6 +70,21 @@ export class PostStore {
   async get(id: string, viewerUserId = "") {
     const row = await this.db.prepare(this.select("p.id = ?")).bind(viewerUserId, id).first<PostRow>();
     return row ? (await this.hydrate([row]))[0] : null;
+  }
+
+  /** A single post for reading: drafts only for their author, member posts only for signed-in viewers. */
+  async readable(id: string, viewer: ContentViewer | undefined) {
+    const post = await this.get(id, viewer?.userId ?? "");
+    if (!post) return null;
+    if (post.status === "draft") return viewer?.personId === post.personId ? post : null;
+    if (post.visibility === "members" && !viewer?.userId) return null;
+    return post;
+  }
+
+  async drafts(personId: string) {
+    const rows = await this.db.prepare(`${this.select("p.person_id = ? AND p.status = 'draft'")} ORDER BY p.updated_at DESC, p.id DESC LIMIT 50`)
+      .bind("", personId).all<PostRow>();
+    return this.hydrate(rows.results);
   }
 
   private async storeImages(personId: string, postId: string, files: File[], bucket: R2Bucket) {
@@ -93,11 +110,12 @@ export class PostStore {
     }
   }
 
-  async create(personId: string, input: { kind: PostKind; title?: string | null; content: string; visibility: "public" | "members" }, files: File[], bucket: R2Bucket | undefined) {
+  async create(personId: string, input: { kind: PostKind; title?: string | null; content: string; visibility: "public" | "members"; status?: PostStatus }, files: File[], bucket: R2Bucket | undefined) {
     const id = `post-${crypto.randomUUID()}`;
     const now = new Date().toISOString();
-    await this.db.prepare(`INSERT INTO posts (id, person_id, title, content, visibility, kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(id, personId, input.title?.trim() || null, input.content, input.visibility, input.kind, now, now).run();
+    const status = input.status ?? "published";
+    await this.db.prepare(`INSERT INTO posts (id, person_id, title, content, visibility, kind, status, published_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(id, personId, input.title?.trim() || null, input.content, input.visibility, input.kind, status, status === "published" ? now : null, now, now).run();
     if (files.length && bucket) {
       try {
         await this.storeImages(personId, id, files, bucket);
@@ -109,7 +127,7 @@ export class PostStore {
     return this.get(id);
   }
 
-  async update(personId: string, id: string, input: { version: number; kind?: PostKind; title?: string | null; content?: string; visibility?: "public" | "members"; isPinned?: boolean }) {
+  async update(personId: string, id: string, input: { version: number; kind?: PostKind; title?: string | null; content?: string; visibility?: "public" | "members"; isPinned?: boolean; status?: PostStatus; publishNow?: boolean }) {
     const assignments: string[] = [];
     const values: unknown[] = [];
     if ("title" in input) { assignments.push("title = ?"); values.push(input.title?.trim() || null); }
@@ -117,9 +135,13 @@ export class PostStore {
     if (input.content !== undefined) { assignments.push("content = ?"); values.push(input.content); }
     if (input.visibility !== undefined) { assignments.push("visibility = ?"); values.push(input.visibility); }
     if (input.isPinned !== undefined) { assignments.push("is_pinned = ?"); values.push(input.isPinned ? 1 : 0); }
+    const now = new Date().toISOString();
+    if (input.status !== undefined) { assignments.push("status = ?"); values.push(input.status); }
+    // Publishing a draft dates the post from the moment it goes live, so it lands at the top of the feed.
+    if (input.publishNow) { assignments.push("published_at = ?", "created_at = ?"); values.push(now, now); }
     if (!assignments.length) return null;
     assignments.push("version = version + 1", "updated_at = ?");
-    values.push(new Date().toISOString());
+    values.push(now);
     const statements = [
       this.db.prepare(`UPDATE posts SET ${assignments.join(", ")} WHERE id = ? AND person_id = ? AND version = ?`).bind(...values, id, personId, input.version),
     ];
@@ -146,7 +168,7 @@ export class PostStore {
   }
 
   async owned(personId: string, id: string) {
-    return this.db.prepare("SELECT id, version, kind, content FROM posts WHERE id = ? AND person_id = ?").bind(id, personId).first<{ id: string; version: number; kind: PostKind; content: string }>();
+    return this.db.prepare("SELECT id, version, kind, content, status FROM posts WHERE id = ? AND person_id = ?").bind(id, personId).first<{ id: string; version: number; kind: PostKind; content: string; status: PostStatus }>();
   }
 
   async imageCount(id: string) {
@@ -173,7 +195,7 @@ export class PostStore {
   }
 
   async setLike(postId: string, userId: string, liked: boolean) {
-    const post = await this.db.prepare("SELECT id FROM posts WHERE id = ?").bind(postId).first();
+    const post = await this.db.prepare("SELECT id FROM posts WHERE id = ? AND status = 'published'").bind(postId).first();
     if (!post) return null;
     await (liked
       ? this.db.prepare("INSERT OR IGNORE INTO post_likes (post_id, user_id) VALUES (?, ?)").bind(postId, userId)
@@ -212,7 +234,24 @@ export async function listPersonPosts(c: any) {
   return c.json({ data: result.items, meta: { offset, limit, hasMore: result.hasMore } });
 }
 
+/** `GET /api/posts/:id` */
+export async function readPost(c: any) {
+  if (!c.env?.DB) return error(503, "DATABASE_UNAVAILABLE", "内容数据库未配置");
+  const session = await currentSession(c);
+  const viewer = session ? { userId: session.user.id, personId: session.user.personId, role: session.user.role } : undefined;
+  const post = await new PostStore(c.env.DB).readable(c.req.param("id"), viewer);
+  if (!post) return error(session ? 404 : 401, session ? "POST_NOT_FOUND" : "UNAUTHENTICATED", session ? "动态不存在或不可见" : "动态不存在，或需要登录后查看");
+  return c.json({ data: post });
+}
+
 export const myPostsApi = new Hono<{ Bindings: Env }>();
+
+myPostsApi.get("/drafts", async (c) => {
+  const session = await currentSession(c);
+  if (!session) return error(401, "UNAUTHENTICATED", "请先登录");
+  const drafts = await new PostStore(c.env.DB!).drafts(session.user.personId);
+  return c.json({ data: drafts, meta: { total: drafts.length } });
+});
 
 myPostsApi.post("/", async (c) => {
   const session = await currentSession(c);
@@ -224,6 +263,7 @@ myPostsApi.post("/", async (c) => {
     title: typeof form.title === "string" ? form.title : undefined,
     content: typeof form.content === "string" ? form.content : "",
     visibility: typeof form.visibility === "string" ? form.visibility : undefined,
+    status: typeof form.status === "string" ? form.status : undefined,
   });
   if (!parsed.success) return error(400, "VALIDATION_ERROR", "请检查动态类型和正文长度（随手记最多 10000 字，经验分享最多 100000 字）");
   const files = imageFiles(form.images);
@@ -244,9 +284,14 @@ myPostsApi.patch("/:id", async (c) => {
   if (!existing) return error(404, "POST_NOT_FOUND", "动态不存在");
   const effectiveKind = parsed.data.kind ?? existing.kind;
   const effectiveContent = parsed.data.content ?? existing.content;
+  const effectiveStatus = parsed.data.status ?? existing.status ?? "published";
   if (effectiveKind === "note" && effectiveContent.length > 10_000) return error(400, "VALIDATION_ERROR", "随手记正文不能超过 10000 字");
+  if (effectiveStatus === "published" && !effectiveContent.trim()) return error(400, "VALIDATION_ERROR", "正文不能为空");
+  if (existing.status === "published" && parsed.data.status === "draft") return error(409, "ALREADY_PUBLISHED", "已发布的动态不能退回草稿");
+  if (effectiveStatus === "draft" && parsed.data.isPinned) return error(409, "DRAFT_NOT_PINNABLE", "草稿不能置顶");
   if (await store.imageCount(existing.id) > POST_IMAGE_LIMITS[effectiveKind]) return error(400, "TOO_MANY_IMAGES", `切换为随手记前请将图片减少到 ${POST_IMAGE_LIMITS[effectiveKind]} 张以内`);
-  const post = await store.update(session.user.personId, c.req.param("id"), parsed.data);
+  const publishNow = existing.status === "draft" && parsed.data.status === "published";
+  const post = await store.update(session.user.personId, c.req.param("id"), { ...parsed.data, publishNow });
   if (!post) return error(409, "VERSION_CONFLICT", "动态不存在或已被更新，请刷新后重试");
   return c.json({ data: post });
 });
@@ -283,6 +328,8 @@ myPostsApi.delete("/:id/images/:attachmentId", async (c) => {
 });
 
 export const postReactionsApi = new Hono<{ Bindings: Env }>();
+
+postReactionsApi.get("/:id", readPost);
 
 for (const [method, liked] of [["put", true], ["delete", false]] as const) {
   postReactionsApi[method]("/:id/like", async (c) => {

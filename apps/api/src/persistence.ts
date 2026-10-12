@@ -1,5 +1,5 @@
 import type { Cohort, Person, TreeNode } from "./types.ts";
-import { joinSeasonAt, joinSeasonFromDate, joinedAtFromSeason, type JoinSeason } from "../../../packages/shared/src/domain.ts";
+import { cohortOrderValid, joinSeasonAt, joinSeasonFromDate, joinedAtFromSeason, type JoinSeason } from "../../../packages/shared/src/domain.ts";
 import { analyzeLineage } from "./lib/lineage.ts";
 import {
   SESSION_TTL_MS,
@@ -377,7 +377,7 @@ export class D1Persistence {
       groupRole: viewerRecord.person.groupRole,
     } : null, { mentorId: record.person.mentorId, cohortYear: record.person.cohortYear });
     const attachments = await this.attachments(id, viewer);
-    const postCount = await this.db.prepare("SELECT COUNT(*) AS count FROM posts WHERE person_id = ? AND (visibility = 'public' OR ? = 1)")
+    const postCount = await this.db.prepare("SELECT COUNT(*) AS count FROM posts WHERE person_id = ? AND status = 'published' AND (visibility = 'public' OR ? = 1)")
       .bind(id, canViewMembers ? 1 : 0).first<{ count: number }>();
     return {
       ...toSummary(record),
@@ -470,11 +470,11 @@ export class D1Persistence {
   async attachment(id: string) {
     const row = await this.db.prepare(`SELECT a.id, a.person_id AS personId, a.object_key AS objectKey, a.original_name AS originalName,
       a.mime_type AS mimeType, a.size, a.category, a.visibility, a.status, a.created_at AS createdAt, p.name AS personName,
-      a.post_id AS postId, post.visibility AS postVisibility
+      a.post_id AS postId, post.visibility AS postVisibility, post.status AS postStatus
       FROM attachments a JOIN people p ON p.id = a.person_id LEFT JOIN posts post ON post.id = a.post_id WHERE a.id = ?`).bind(id).first<{
         id: string; personId: string; objectKey: string; originalName: string; mimeType: string; size: number;
         category: string; visibility: string; status: string; createdAt: string; personName: string;
-        postId: string | null; postVisibility: "public" | "members" | null;
+        postId: string | null; postVisibility: "public" | "members" | null; postStatus: "draft" | "published" | null;
       }>();
     if (!row) return null;
     return { ...row, originalName: normalizedAttachmentName(row.personName, row.category, row.originalName, row.mimeType, row.id, row.createdAt) };
@@ -647,7 +647,9 @@ export class D1Persistence {
 
     const credentials = await createPasswordFields(input.password);
     const accountId = `account-${crypto.randomUUID()}`;
-    const year = new Date(now).getUTCFullYear();
+    // A student always belongs to a later cohort than the mentor who invited them.
+    const mentorYear = input.mentorId ? await this.cohortYearOf(input.mentorId) : null;
+    const year = Math.max(new Date(now).getUTCFullYear(), mentorYear !== null ? mentorYear + 1 : 0);
     const joinedAt = joinSeasonAt(new Date(now)).joinedAt;
     const sessionToken = createOpaqueToken("session");
     const sessionTokenHash = await hashToken(sessionToken);
@@ -825,6 +827,19 @@ export class D1Persistence {
     return { state: "updated", person: await this.personDetail(targetPersonId, { userId: viewerUserId, personId: actorPersonId }) } as const;
   }
 
+  async cohortYearOf(personId: string) {
+    const row = await this.db.prepare("SELECT COALESCE(p.cohort_year, c.year) AS year FROM people p LEFT JOIN cohorts c ON c.id = p.cohort_id WHERE p.id = ?")
+      .bind(personId).first<{ year: number | null }>();
+    return row?.year ?? null;
+  }
+
+  /** Earliest cohort among a mentor's direct students, used to keep a mentor's own cohort earlier. */
+  async earliestStudentCohortYear(personId: string) {
+    const row = await this.db.prepare("SELECT MIN(COALESCE(s.cohort_year, c.year)) AS year FROM people s LEFT JOIN cohorts c ON c.id = s.cohort_id WHERE s.mentor_id = ?")
+      .bind(personId).first<{ year: number | null }>();
+    return row?.year ?? null;
+  }
+
   async updateMentoredStudent(mentorId: string, personId: string, input: {
     version: number;
     name?: string;
@@ -987,9 +1002,10 @@ export class D1Persistence {
     joinedAt: string | null;
     birthday: string | null;
   }, now = Date.now(), allowNonLineage = false) {
-    const mentor = await this.db.prepare("SELECT id, relation_scope FROM people WHERE id = ?")
-      .bind(mentorId).first<{ id: string; relation_scope: string }>();
+    const mentor = await this.db.prepare("SELECT p.id, p.relation_scope, COALESCE(p.cohort_year, c.year) AS cohort_year FROM people p LEFT JOIN cohorts c ON c.id = p.cohort_id WHERE p.id = ?")
+      .bind(mentorId).first<{ id: string; relation_scope: string; cohort_year: number | null }>();
     if (!mentor) return { state: "mentor-not-found" } as const;
+    if (!cohortOrderValid(mentor.cohort_year, input.cohortYear)) return { state: "cohort-order", mentorCohortYear: mentor.cohort_year } as const;
     // Administrators may manage the tree even when their own profile is a
     // cohort guest (the bootstrap account is intentionally kept outside the
     // lineage). Regular members remain restricted to lineage mentors.

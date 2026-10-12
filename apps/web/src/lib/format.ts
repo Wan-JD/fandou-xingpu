@@ -71,3 +71,31 @@ export function seededRandom(seed: string) {
     return (hash >>> 0) / 4294967296;
   };
 }
+
+/** Plain-text summary of a Markdown article for cards and draft lists. */
+export function markdownExcerpt(source: string, length = 140) {
+  const text = source
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/^\s{0,3}(#{1,6}|>|[-*+]|\d+\.)\s+/gm, "")
+    .replace(/[*_~`|]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return text.length > length ? `${text.slice(0, length).trimEnd()}…` : text;
+}
+
+/** Characters excluding Markdown syntax, counted the way Chinese writers expect. */
+export function articleLength(source: string) {
+  return markdownExcerpt(source, Number.MAX_SAFE_INTEGER).replace(/\s/g, "").length;
+}
+
+/** Roughly 400 Chinese characters per minute, never less than one minute. */
+export function readingMinutes(source: string) {
+  return Math.max(1, Math.round(articleLength(source) / 400));
+}
+
+/** Attachment ids referenced inline as Markdown images. */
+export function inlineAttachmentIds(source: string) {
+  return new Set([...source.matchAll(/\/api\/attachments\/([\w-]+)/g)].map((match) => match[1]));
+}

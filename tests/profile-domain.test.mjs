@@ -77,3 +77,28 @@ test("过期的置顶请求不会先清除当前置顶", async () => {
   const result = await new PostStore(db).update("person-1", "post-2", { version: 7, isPinned: true });
   assert.equal(result, null);
 });
+
+test("去向只对已毕业和大四成员开放登记", async () => {
+  const { canRecordDestination } = await import("../packages/shared/src/domain.ts");
+  const october2026 = new Date("2026-10-12T08:00:00+08:00");
+  assert.equal(canRecordDestination({ status: "archived", cohortYear: 2024 }, october2026), true, "graduates always can");
+  assert.equal(canRecordDestination({ status: "active", cohortYear: 2023 }, october2026), true, "2023 cohort is fourth-year in autumn 2026");
+  assert.equal(canRecordDestination({ status: "active", cohortYear: 2024 }, october2026), false, "third-years cannot");
+  assert.equal(canRecordDestination({ status: "active", cohortYear: 2024 }, new Date("2027-09-01T08:00:00+08:00")), true, "the 2024 cohort becomes fourth-year on September 1");
+  assert.equal(canRecordDestination({ status: "active", cohortYear: null }, october2026), false);
+});
+
+test("徒弟的级别必须晚于师傅，未分级不受限制", async () => {
+  const { cohortOrderValid } = await import("../packages/shared/src/domain.ts");
+  assert.equal(cohortOrderValid(2022, 2023), true);
+  assert.equal(cohortOrderValid(2022, 2022), false, "same cohort cannot mentor each other");
+  assert.equal(cohortOrderValid(2023, 2022), false);
+  assert.equal(cohortOrderValid(null, 2022), true);
+  assert.equal(cohortOrderValid(2022, null), true);
+});
+
+test("草稿可以为空，发布必须有正文", () => {
+  assert.equal(postInputSchema.safeParse({ kind: "experience", status: "draft", content: "" }).success, true);
+  assert.equal(postInputSchema.safeParse({ kind: "experience", status: "published", content: "  " }).success, false);
+  assert.equal(postInputSchema.parse({ content: "x" }).status, "published");
+});

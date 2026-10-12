@@ -10,6 +10,7 @@ export type GroupRole = "leader" | "vice_leader";
 export type CoverTheme = "nebula" | "aurora" | "dawn" | "abyss";
 export type PostVisibility = "public" | "members";
 export type PostKind = "note" | "experience";
+export type PostStatus = "draft" | "published";
 export type DatePrecision = "year" | "month" | "day";
 export type AchievementKind = "achievement" | "honor";
 export type AttachmentCategory = "avatar" | "resume" | "photo" | "certificate" | "other";
@@ -110,6 +111,8 @@ export interface Post {
   content: string;
   visibility: PostVisibility;
   kind: PostKind;
+  status: PostStatus;
+  publishedAt: string | null;
   isPinned: boolean;
   images: PostImage[];
   likeCount: number;

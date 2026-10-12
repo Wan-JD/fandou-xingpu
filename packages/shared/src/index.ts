@@ -9,6 +9,7 @@ export {
   coverThemeSchema,
   postVisibilitySchema,
   postKindSchema,
+  postStatusSchema,
   joinSeasonSchema,
   birthdaySchema,
   postInputSchema,

@@ -7,9 +7,12 @@ import StarAvatar from "./components/StarAvatar.vue";
 import ProfilePage from "./components/profile/ProfilePage.vue";
 import StudentStudio from "./components/students/StudentStudio.vue";
 import StarMap from "./components/map/StarMap.vue";
+import ArticleEditor from "./components/posts/ArticleEditor.vue";
+import ArticleView from "./components/posts/ArticleView.vue";
+import { canLeave } from "./lib/navigation";
 import { apiErrorMessage } from "./lib/api";
 import {
-  academicGrade, destinationEligible, destinationLabels, formatCohort, groupRoleLabels, membershipLabels,
+  academicGrade, destinationLabels, formatCohort, groupRoleLabels, membershipLabels,
   normaliseNode, relationLabel, type Cohort, type Person, type SessionUser, type Tone,
 } from "./lib/people";
 import { mountStarfield, type Starfield } from "./lib/starfield";
@@ -83,17 +86,22 @@ const isRegisterRoute = computed(() => pathname.value === "/register");
 const isClaimRoute = computed(() => pathname.value === "/claim");
 const isAdminRoute = computed(() => pathname.value === "/admin");
 const isStudentsRoute = computed(() => pathname.value === "/students");
-const isHomeRoute = computed(() => !isDetailRoute.value && !isRegisterRoute.value && !isClaimRoute.value && !isAdminRoute.value && !isStudentsRoute.value);
+/** `/write` starts a new article, `/posts/:id` reads one and `/posts/:id/edit` reopens it in the editor. */
+const articleRoute = computed(() => {
+  if (pathname.value === "/write") return { mode: "edit" as const, id: null };
+  const match = pathname.value.match(/^\/posts\/([^/]+)(\/edit)?\/?$/);
+  if (!match) return null;
+  let id = match[1];
+  try { id = decodeURIComponent(id); } catch { /* keep the raw id */ }
+  return { mode: match[2] ? "edit" as const : "read" as const, id };
+});
+const isHomeRoute = computed(() => !isDetailRoute.value && !isRegisterRoute.value && !isClaimRoute.value && !isAdminRoute.value && !isStudentsRoute.value && !articleRoute.value);
 const inviteToken = computed(() => new URLSearchParams(search.value).get("invite") ?? "");
 const claimToken = computed(() => new URLSearchParams(search.value).get("token") ?? "");
 const focusId = computed(() => new URLSearchParams(search.value).get("focus"));
+const openDraftsFlag = computed(() => new URLSearchParams(search.value).has("drafts"));
 const myPersonId = computed(() => sessionUser.value?.personId ?? null);
 const legendDestinations = Object.entries(destinationLabels) as Array<[keyof typeof destinationLabels, string]>;
-const destinationSample = computed(() => people.value.filter((person) => destinationEligible(person)));
-const destinationStats = computed(() => Object.fromEntries([
-  ...legendDestinations.map(([value]) => [value, destinationSample.value.filter((person) => person.destination === value).length]),
-  ["unset", destinationSample.value.filter((person) => !person.destination).length],
-]) as Record<keyof typeof destinationLabels | "unset", number>);
 const isSecondaryCohort = (cohort: Cohort) => (academicGrade(cohort.year) ?? 0) <= 0;
 
 async function loadTree() {
@@ -223,6 +231,7 @@ function applyLocation() {
   if (isHomeRoute.value && focusId.value) nextTick(() => focusStar(focusId.value!));
 }
 function navigate(path: string) {
+  if (!canLeave()) return;
   const target = new URL(path, window.location.origin);
   if (target.pathname + target.search !== window.location.pathname + window.location.search) window.history.pushState({}, "", target.pathname + target.search);
   applyLocation();
@@ -338,6 +347,33 @@ onUnmounted(() => {
       <AdminPanel v-if="sessionUser?.role === 'admin' && sessionToken" :session-token="sessionToken" @changed="refreshAfterAdminChange" />
       <section v-else class="state-message" role="status"><p>管理员账号登录后才能打开维护工作台。</p><button type="button" @click="() => openAuth()">登录管理员账号</button></section>
     </main>
+    <main v-else-if="articleRoute?.mode === 'edit'" class="workspace-page">
+      <ArticleEditor
+        v-if="sessionUser && sessionToken"
+        :key="`${articleRoute.id ?? 'new'}:${sessionUser.personId}`"
+        :post-id="articleRoute.id"
+        :session-token="sessionToken"
+        :session-user="sessionUser"
+        :open-drafts="openDraftsFlag"
+        @navigate="navigate"
+        @session-expired="onSessionExpired"
+      />
+      <section v-else-if="!sessionLoading" class="state-message" role="status"><p>登录后才能写经验分享。</p><button type="button" @click="() => openAuth()">登录</button></section>
+      <div v-else class="state-message"><span class="loading-ring"></span>正在读取账号</div>
+    </main>
+    <main v-else-if="articleRoute?.mode === 'read' && articleRoute.id" class="workspace-page" aria-live="polite">
+      <ArticleView
+        :key="articleRoute.id"
+        :post-id="articleRoute.id"
+        :people="people"
+        :root-person-id="rootPerson?.id ?? null"
+        :session-token="sessionToken"
+        :session-user="sessionUser"
+        @navigate="navigate"
+        @require-auth="openAuth()"
+        @session-expired="onSessionExpired"
+      />
+    </main>
     <main v-else-if="isStudentsRoute" class="workspace-page" aria-live="polite">
       <StudentStudio
         v-if="sessionUser && sessionToken"
@@ -386,9 +422,8 @@ onUnmounted(() => {
         <div class="legend">
           <span class="legend-item"><i class="legend-star aqua"></i>在读</span>
           <span class="legend-item"><i class="legend-star fog"></i>毕业</span>
-          <span class="legend-scope">去向样本 {{ destinationSample.length }} / 全组 {{ people.length }}</span>
-          <span v-for="[value, label] in legendDestinations" :key="value" class="legend-item destination-key" :class="`destination-${value}`"><i></i>{{ label }} {{ destinationStats[value] }}</span>
-          <span class="legend-item destination-unset"><i class="legend-star fog"></i>待补充 {{ destinationStats.unset }}</span>
+          <span class="legend-divider" aria-hidden="true"></span>
+          <span v-for="[value, label] in legendDestinations" :key="value" class="legend-item destination-key" :class="`destination-${value}`"><i></i>{{ label }}</span>
           <span class="legend-divider" aria-hidden="true"></span>
           <span class="legend-item role-key group-leader"><i><svg viewBox="0 0 24 24"><path d="M3 18 4.5 7l5 4.5L12 4l2.5 7.5 5-4.5L21 18Z" /></svg></i>组长</span>
           <span class="legend-item role-key group-vice_leader"><i><svg viewBox="0 0 24 24"><path d="M3 18 4.5 7l5 4.5L12 4l2.5 7.5 5-4.5L21 18Z" /></svg></i>副组长</span>

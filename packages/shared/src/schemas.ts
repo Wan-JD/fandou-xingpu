@@ -10,6 +10,7 @@ export const groupRoleSchema = z.enum(["leader", "vice_leader"]);
 export const coverThemeSchema = z.enum(["nebula", "aurora", "dawn", "abyss"]);
 export const postVisibilitySchema = z.enum(["public", "members"]);
 export const postKindSchema = z.enum(["note", "experience"]);
+export const postStatusSchema = z.enum(["draft", "published"]);
 export const joinSeasonSchema = z.enum(["spring", "autumn"]);
 export const birthdaySchema = z.string().refine(isValidDateOnly, "请输入真实的出生日期");
 export const datePrecisionSchema = z.enum(["year", "month", "day"]);
@@ -78,18 +79,22 @@ export const achievementInputSchema = z.object({
 export const postInputSchema = z.object({
   kind: postKindSchema.optional().default("note"),
   title: z.string().trim().max(120).nullable().optional(),
-  content: z.string().trim().min(1).max(100_000),
+  // Drafts may be saved empty; published posts need a body.
+  content: z.string().trim().max(100_000).optional().default(""),
   visibility: postVisibilitySchema.optional().default("public"),
+  status: postStatusSchema.optional().default("published"),
 }).strict().superRefine((value, ctx) => {
+  if (value.status === "published" && !value.content) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["content"], message: "正文不能为空" });
   if (value.kind === "note" && value.content.length > 10_000) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["content"], message: "随手记正文不能超过 10000 字" });
 });
 
 export const postUpdateSchema = z.object({
   kind: postKindSchema.optional(),
   title: z.string().trim().max(120).nullable().optional(),
-  content: z.string().trim().min(1).max(100_000).optional(),
+  content: z.string().trim().max(100_000).optional(),
   visibility: postVisibilitySchema.optional(),
   isPinned: z.boolean().optional(),
+  status: postStatusSchema.optional(),
   version: z.number().int().min(1),
 }).strict().superRefine((value, ctx) => {
   if (value.kind === "note" && value.content && value.content.length > 10_000) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["content"], message: "随手记正文不能超过 10000 字" });

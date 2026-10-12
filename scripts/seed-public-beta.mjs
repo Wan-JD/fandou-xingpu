@@ -17,7 +17,8 @@ if (process.env.CLOUDFLARE_API_TOKEN || process.argv.includes("--remote")) {
 }
 
 const sqlValue = (value) => value == null ? "NULL" : `'${String(value).replaceAll("'", "''")}'`;
-const cohortSizes = new Map([[2022, 10], [2023, 10], [2024, 10], [2025, 24], [2026, 10]]);
+// 2021 is a small founding cohort so every later member has a mentor from an earlier cohort.
+const cohortSizes = new Map([[2021, 3], [2022, 10], [2023, 10], [2024, 10], [2025, 24], [2026, 10]]);
 const tracks = ["产品", "设计", "前端", "后端", "数据", "算法", "运营", "增长"];
 const destinations = ["big_tech", "postgraduate_985", "postgraduate_211", "other", null];
 const people = [];
@@ -28,9 +29,8 @@ for (const [year, size] of cohortSizes) {
     const id = `public-beta-${year}-${serial}`;
     const previousSize = cohortSizes.get(year - 1) ?? 0;
     const mentorIndex = previousSize ? ((index - 1) % previousSize) + 1 : null;
-    const mentorId = year === 2022
-      ? (index === 1 ? null : "public-beta-2022-01")
-      : `public-beta-${year - 1}-${String(mentorIndex).padStart(2, "0")}`;
+    // Mentors always come from the previous cohort; members never mentor someone in their own cohort.
+    const mentorId = mentorIndex ? `public-beta-${year - 1}-${String(mentorIndex).padStart(2, "0")}` : null;
     const groupRole = index === 1 ? "leader" : index === 2 ? "vice_leader" : null;
     const month = ((index * 2 + year) % 12) + 1;
     const day = ((index * 5) % 27) + 1;
@@ -39,9 +39,10 @@ for (const [year, size] of cohortSizes) {
       name: `【公测】${year}级${serial}号`,
       birthday: `${2000 + (year - 2022)}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`,
       joinedAt: `${year}-${index % 3 === 0 ? "03" : "09"}-01`,
-      status: year === 2022 ? "archived" : "active",
+      status: year <= 2022 ? "archived" : "active",
       memberType: index % 5 === 0 ? "probationary" : "formal",
-      destination: destinations[(index - 1) % destinations.length],
+      // Only graduates and current fourth-years (2023) record a destination.
+      destination: year <= 2023 ? destinations[(index - 1) % destinations.length] : null,
       track: tracks[(index - 1) % tracks.length],
     });
   }
@@ -86,10 +87,18 @@ INSERT OR IGNORE INTO users (
   ${sqlValue(account.passwordHash)}, 0, datetime('now')
 );`).join("\n");
 
+// Earlier seeds attached the 2022 cohort to 2022-01; move existing rows onto their 2021 mentors.
+const mentorFixSql = people
+  .filter((person) => person.year === 2022)
+  .map((person) => `UPDATE people SET mentor_id = ${sqlValue(person.mentorId)}, version = version + 1, updated_at = datetime('now') WHERE id = ${sqlValue(person.id)} AND mentor_id IS NOT ${sqlValue(person.mentorId)};`)
+  .join("\n");
+
 const sql = `
 PRAGMA foreign_keys = ON;
 BEGIN TRANSACTION;
 ${personSql}
+${mentorFixSql}
+UPDATE people SET destination = NULL WHERE id LIKE 'public-beta-%' AND cohort_year >= 2024 AND status = 'active' AND destination IS NOT NULL;
 ${accountSql}
 INSERT OR IGNORE INTO posts (id, person_id, kind, title, content, visibility, is_pinned)
 VALUES (

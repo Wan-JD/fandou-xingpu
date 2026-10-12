@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { createPasswordFields, normalizeEmail, normalizePhone } from "./session.ts";
 import { persistence } from "./persistence.ts";
-import { isValidDateOnly, joinedAtFromSeason, joinSeasonAt } from "../../../packages/shared/src/domain.ts";
+import { canRecordDestination, cohortOrderValid, isValidDateOnly, joinedAtFromSeason, joinSeasonAt } from "../../../packages/shared/src/domain.ts";
 import type { Env } from "./types.ts";
 
 type AdminVariables = {
@@ -115,12 +115,20 @@ async function deletePersonAndAccount(
   };
 }
 
-async function mentorProblem(db: D1Database, personId: string, mentorId: string | null, relationScope: "lineage" | "cohort_guest") {
+async function mentorProblem(db: D1Database, personId: string, mentorId: string | null, relationScope: "lineage" | "cohort_guest", cohortYear?: number | null) {
   if (relationScope === "cohort_guest" && mentorId) return "SCOPE_MENTOR_CONFLICT";
+  // A cohort change must stay later than the mentor and earlier than every direct student.
+  if (cohortYear !== undefined && cohortYear !== null) {
+    const earliestStudent = await db.prepare("SELECT MIN(COALESCE(s.cohort_year, c.year)) AS year FROM people s LEFT JOIN cohorts c ON c.id = s.cohort_id WHERE s.mentor_id = ?")
+      .bind(personId).first<{ year: number | null }>();
+    if (!cohortOrderValid(cohortYear, earliestStudent?.year ?? null)) return "COHORT_ORDER";
+  }
   if (!mentorId) return null;
   if (mentorId === personId) return "MENTOR_SELF";
-  const mentor = await db.prepare("SELECT id, relation_scope FROM people WHERE id = ?").bind(mentorId).first<{ id: string; relation_scope: string }>();
+  const mentor = await db.prepare("SELECT p.id, p.relation_scope, COALESCE(p.cohort_year, c.year) AS cohort_year FROM people p LEFT JOIN cohorts c ON c.id = p.cohort_id WHERE p.id = ?")
+    .bind(mentorId).first<{ id: string; relation_scope: string; cohort_year: number | null }>();
   if (!mentor) return "MENTOR_NOT_FOUND";
+  if (cohortYear !== undefined && !cohortOrderValid(mentor.cohort_year, cohortYear)) return "COHORT_ORDER";
   if (relationScope === "lineage" && mentor.relation_scope !== "lineage") {
     const adminMentor = await db.prepare("SELECT 1 FROM users WHERE person_id = ? AND role = 'admin' AND status = 'active'")
       .bind(mentorId).first();
@@ -138,12 +146,17 @@ async function mentorProblem(db: D1Database, personId: string, mentorId: string 
 }
 
 function mentorError(code: string) {
+  if (code === "COHORT_ORDER") return error(409, code, "徒弟的级别必须晚于师傅，同级成员不能互为师徒");
   if (code === "SCOPE_MENTOR_CONFLICT") return error(409, code, "同级成员不能设置师傅");
   if (code === "MENTOR_NOT_LINEAGE") return error(409, code, "谱系人物只能选择谱系中的师傅");
   if (code === "HAS_LINEAGE_STUDENTS") return error(409, code, "仍有谱系徒弟，不能改为同级成员");
   if (code === "MENTOR_SELF") return error(409, code, "人物不能成为自己的师傅");
   if (code === "MENTOR_NOT_FOUND") return error(404, code, "指定师傅不存在");
   return error(409, "MENTOR_CYCLE", "师徒关系会形成循环");
+}
+
+function destinationError() {
+  return error(409, "DESTINATION_NOT_ELIGIBLE", "只有已毕业或大四成员可以登记去向");
 }
 
 export const adminApi = new Hono<{ Bindings: Env; Variables: AdminVariables }>();
@@ -206,8 +219,9 @@ adminApi.post("/members", async (c) => {
   if (!name || destination === undefined || birthday === undefined
     || (hasJoinParts && (!Number.isInteger(joinedYear) || joinedYear < 1900 || joinedYear > 2200 || !joinedSeason))
     || (cohortYear !== null && (!Number.isInteger(cohortYear) || cohortYear < 1900 || cohortYear > 2200))) return error(400, "VALIDATION_ERROR", "请检查姓名、级别年份、生日、进组时间和去向");
+  if (destination && !canRecordDestination({ status: status as "active" | "archived", cohortYear })) return destinationError();
   const id = `person-${crypto.randomUUID()}`;
-  const relationError = await mentorProblem(c.env.DB!, id, mentorId, relationScope as "lineage" | "cohort_guest");
+  const relationError = await mentorProblem(c.env.DB!, id, mentorId, relationScope as "lineage" | "cohort_guest", cohortYear);
   if (relationError) return mentorError(relationError);
   const actor = c.get("adminUser");
   try {
@@ -221,7 +235,7 @@ adminApi.post("/members", async (c) => {
       audit(c.env.DB!, actor.id, "member.create", "person", id, { name, cohortYear, mentorId, status, memberType: "formal", destination, groupRole: null, joinedAt, birthday, relationScope }),
     ]);
   } catch (cause) {
-    const code = String(cause).match(/MENTOR_(SELF|NOT_FOUND|NOT_LINEAGE|CYCLE)|SCOPE_MENTOR_CONFLICT|HAS_LINEAGE_STUDENTS/)?.[0];
+    const code = String(cause).match(/MENTOR_(SELF|NOT_FOUND|NOT_LINEAGE|CYCLE)|SCOPE_MENTOR_CONFLICT|HAS_LINEAGE_STUDENTS|COHORT_ORDER/)?.[0];
     if (code) return mentorError(code);
     throw cause;
   }
@@ -230,11 +244,14 @@ adminApi.post("/members", async (c) => {
 
 adminApi.patch("/members/:id", async (c) => {
   const personId = c.req.param("id");
-  const existing = await c.env.DB!.prepare("SELECT id, mentor_id, relation_scope, version FROM people WHERE id = ?")
-    .bind(personId).first<{ id: string; mentor_id: string | null; relation_scope: "lineage" | "cohort_guest"; version: number }>();
+  const existing = await c.env.DB!.prepare("SELECT p.id, p.mentor_id, p.relation_scope, p.version, p.status, p.destination, COALESCE(p.cohort_year, c.year) AS cohort_year FROM people p LEFT JOIN cohorts c ON c.id = p.cohort_id WHERE p.id = ?")
+    .bind(personId).first<{ id: string; mentor_id: string | null; relation_scope: "lineage" | "cohort_guest"; version: number; status: "active" | "archived"; destination: string | null; cohort_year: number | null }>();
   if (!existing) return error(404, "PERSON_NOT_FOUND", "人物不存在");
   const body = await c.req.json().catch(() => null) as Record<string, unknown> | null;
   if (!body) return error(400, "VALIDATION_ERROR", "请求内容无效");
+  let resultingCohortYear = existing.cohort_year;
+  let resultingStatus = existing.status;
+  let resultingDestination: string | null = null;
   if (Object.prototype.hasOwnProperty.call(body, "memberType")) return error(403, "MEMBER_TYPE_FORBIDDEN", "请通过成员资料页由本人的直接师傅设置组员身份");
   if (Object.prototype.hasOwnProperty.call(body, "groupRole")) return error(403, "GROUP_ROLE_FORBIDDEN", "请通过成员资料页由本人的直接师傅或上一届正副组长设置组内职务");
   const assignments: string[] = [];
@@ -280,16 +297,19 @@ adminApi.patch("/members/:id", async (c) => {
       : rawCohortYear;
     if (cohortYear !== null && (!Number.isInteger(cohortYear) || cohortYear < 1900 || cohortYear > 2200)) return error(400, "VALIDATION_ERROR", "级别年份无效");
     assignments.push("cohort_year = ?", "cohort_id = NULL"); values.push(cohortYear); details.cohortYear = cohortYear;
+    resultingCohortYear = cohortYear;
   }
   if ("status" in body) {
     if (typeof body.status !== "string" || !personStatuses.has(body.status)) return error(400, "VALIDATION_ERROR", "人物状态无效");
     assignments.push("status = ?"); values.push(body.status); details.status = body.status;
+    resultingStatus = body.status as "active" | "archived";
   }
   if ("destination" in body) {
     const destination = body.destination === null || body.destination === "" ? null
       : typeof body.destination === "string" && destinations.has(body.destination) ? body.destination : undefined;
     if (destination === undefined) return error(400, "VALIDATION_ERROR", "去向无效");
     assignments.push("destination = ?"); values.push(destination); details.destination = destination;
+    resultingDestination = destination;
   }
   if ("birthday" in body) {
     const birthday = body.birthday === null || body.birthday === "" ? null
@@ -311,12 +331,15 @@ adminApi.patch("/members/:id", async (c) => {
     assignments.push("mentor_id = ?"); values.push(mentorId); details.mentorId = mentorId;
   }
   if (!assignments.length) return error(400, "NO_CHANGES", "没有可保存的修改");
+  // Saving a member with an older destination untouched stays possible; only a new value is checked.
+  if (resultingDestination && resultingDestination !== existing.destination && !canRecordDestination({ status: resultingStatus, cohortYear: resultingCohortYear })) return destinationError();
   const resultingMentorId = "mentorId" in body ? nullableId(body.mentorId) : existing.mentor_id;
   const resultingScope = "lineage" as const;
   if (existing.relation_scope !== "lineage") {
     assignments.push("relation_scope = ?"); values.push("lineage"); details.relationScope = "lineage";
   }
-  const relationError = await mentorProblem(c.env.DB!, personId, resultingMentorId, resultingScope);
+  const relationError = await mentorProblem(c.env.DB!, personId, resultingMentorId, resultingScope,
+    "cohortYear" in body || "cohortId" in body || "mentorId" in body ? resultingCohortYear : undefined);
   if (relationError) return mentorError(relationError);
   assignments.push("version = version + 1", "updated_at = datetime('now')");
   const actor = c.get("adminUser");
@@ -331,7 +354,7 @@ adminApi.patch("/members/:id", async (c) => {
     }
     await audit(c.env.DB!, actor.id, "member.update", "person", personId, { ...details, fromVersion: expectedVersion }).run();
   } catch (cause) {
-    const code = String(cause).match(/MENTOR_(SELF|NOT_FOUND|NOT_LINEAGE|CYCLE)|SCOPE_MENTOR_CONFLICT|HAS_LINEAGE_STUDENTS/)?.[0];
+    const code = String(cause).match(/MENTOR_(SELF|NOT_FOUND|NOT_LINEAGE|CYCLE)|SCOPE_MENTOR_CONFLICT|HAS_LINEAGE_STUDENTS|COHORT_ORDER/)?.[0];
     if (code) return mentorError(code);
     throw cause;
   }

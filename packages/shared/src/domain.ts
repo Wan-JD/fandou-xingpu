@@ -105,3 +105,17 @@ export function isDestinationStatisticEligible(
 ): boolean {
   return person.status === "archived" || gradeForCohort(person.cohortYear, at) === 4;
 }
+
+/** 去向登记只对已毕业成员和当前大四成员开放；清空去向始终允许。 */
+export function canRecordDestination(
+  person: { status: "active" | "archived"; cohortYear: number | null | undefined },
+  at: Date = new Date(),
+): boolean {
+  return isDestinationStatisticEligible({ status: person.status, cohortYear: person.cohortYear ?? null }, at);
+}
+
+/** A student must join in a later cohort than their mentor; unknown cohorts are not constrained. */
+export function cohortOrderValid(mentorCohortYear: number | null | undefined, studentCohortYear: number | null | undefined): boolean {
+  if (!Number.isInteger(mentorCohortYear) || !Number.isInteger(studentCohortYear)) return true;
+  return Number(studentCohortYear) > Number(mentorCohortYear);
+}

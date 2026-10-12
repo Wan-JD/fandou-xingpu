@@ -13,7 +13,7 @@ import ZodiacConstellation from "./ZodiacConstellation.vue";
 import { ApiError, apiRequest, authHeaders, copyText, openProtectedFile } from "../../lib/api";
 import { fileSize, linkify, occurredLabel } from "../../lib/format";
 import {
-  destinationClass, destinationLabel, formatCohort, groupRoleClass, groupRoleLabels, membershipLabel, normaliseNode, relationLabel, toneFor,
+  destinationClass, destinationEligible, destinationLabel, formatCohort, groupRoleClass, groupRoleLabels, membershipLabel, normaliseNode, relationLabel, toneFor,
   type Attachment, type Person, type PersonSummary, type Post, type SessionUser, type Tone,
 } from "../../lib/people";
 
@@ -35,6 +35,7 @@ const postsLoading = ref(false);
 const postsError = ref("");
 const postsHasMore = ref(false);
 const editorOpen = ref(false);
+const draftCount = ref(0);
 const membershipEditorOpen = ref(false);
 const editorSection = ref<"basic" | "story" | "skills" | "files" | "records">("basic");
 const bioExpanded = ref(false);
@@ -136,6 +137,14 @@ async function loadPosts(append = false) {
   }
 }
 
+async function loadDraftCount() {
+  draftCount.value = 0;
+  if (props.sessionUser?.personId !== props.personId || !props.sessionToken) return;
+  try {
+    const drafts = await apiRequest<Post[]>("/api/me/posts/drafts", { token: props.sessionToken });
+    draftCount.value = drafts.filter((item) => item.kind === "experience").length;
+  } catch { /* the drafts link is optional */ }
+}
 function resetForPerson() {
   detail.value = null;
   posts.value = [];
@@ -148,10 +157,11 @@ function resetForPerson() {
   fileError.value = "";
   void loadDetail();
   void loadPosts();
+  void loadDraftCount();
 }
 
 watch(() => props.personId, resetForPerson, { immediate: true });
-watch(() => props.sessionToken, () => { void loadDetail(); void loadPosts(); });
+watch(() => props.sessionToken, () => { void loadDetail(); void loadPosts(); void loadDraftCount(); });
 onUnmounted(() => { document.title = "翻斗星谱"; });
 
 function onPostSaved(post: Post) {
@@ -222,7 +232,7 @@ function selectTab(next: Tab) {
 </script>
 
 <template>
-  <div class="profile" :class="[`theme-${theme}`, destinationClass(person ?? { destination: null })]">
+  <div class="profile" :class="[`theme-${theme}`, destinationClass({ destination: person && destinationEligible(person) ? person.destination : null })]">
     <div class="profile-topbar">
       <button class="back-link" type="button" @click="emit('navigate', '/')">← 返回星谱</button>
       <div v-if="person" class="profile-topbar-actions">
@@ -263,7 +273,7 @@ function selectTab(next: Tab) {
             <div class="identity-chips">
               <span class="chip-status" :class="{ graduated: person.status === 'archived' }"><i></i>{{ relationLabel(person) }}</span>
               <span v-if="person.memberType" class="chip-soft" :class="`membership-${person.memberType}`">{{ membershipLabel(person) }}</span>
-              <span v-if="person.destination" class="destination-badge">去向 · {{ destinationLabel(person) }}</span>
+              <span v-if="person.destination && destinationEligible(person)" class="destination-badge">去向 · {{ destinationLabel(person) }}</span>
               <span v-if="person.role && person.role !== '星谱成员'" class="chip-soft">{{ person.role }}</span>
               <span v-for="tag in person.tags" :key="tag" class="chip-soft tag-chip">{{ tag }}</span>
             </div>
@@ -321,7 +331,10 @@ function selectTab(next: Tab) {
           <section v-if="tab === 'posts'" class="tab-panel" aria-label="动态">
             <div v-if="isOwn && sessionToken" class="composer-card">
               <StarAvatar :name="person.name" :avatar-url="person.avatarUrl" :tone="tone" size="sm" />
-              <PostComposer :token="sessionToken" @saved="onPostSaved" />
+              <div class="composer-stack">
+                <PostComposer :token="sessionToken" @saved="onPostSaved" @write-article="emit('navigate', '/write')" />
+                <button v-if="draftCount" class="drafts-link" type="button" @click="emit('navigate', '/write?drafts=1')">草稿箱 · {{ draftCount }} 篇未发布</button>
+              </div>
             </div>
             <div class="post-list">
               <PostCard
@@ -336,6 +349,7 @@ function selectTab(next: Tab) {
                 @deleted="onPostDeleted"
                 @open-image="openPostImage(post, $event)"
                 @require-auth="emit('requireAuth')"
+                @navigate="emit('navigate', $event)"
               />
             </div>
             <div v-if="postsLoading && !posts.length" class="post-skeletons" aria-label="动态加载中"><span v-for="index in 2" :key="index"></span></div>

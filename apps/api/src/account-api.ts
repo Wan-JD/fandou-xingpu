@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { personUpdateSchema, sessionLoginSchema } from "../../../packages/shared/src/schemas.ts";
-import { isValidDateOnly, joinedAtFromSeason, joinSeasonAt, joinSeasonFromDate } from "../../../packages/shared/src/domain.ts";
+import { canRecordDestination, cohortOrderValid, isValidDateOnly, joinedAtFromSeason, joinSeasonAt, joinSeasonFromDate } from "../../../packages/shared/src/domain.ts";
 import { persistence } from "./persistence.ts";
 import type { Env } from "./types.ts";
 
@@ -75,6 +75,11 @@ accountApi.patch("/me/profile", async (c) => {
   if (!parsed.success) return errorResponse("请检查资料内容", "VALIDATION_ERROR", 400, parsed.error.flatten().fieldErrors as Record<string, string[]>);
   const existing = await store.personDetail(session.user.personId);
   if (!existing) return errorResponse("账号尚未绑定人物档案", "PROFILE_NOT_FOUND", 404);
+  // 去向只对已毕业成员和大四成员开放登记；任何人都可以清空自己的去向。
+  if (parsed.data.destination && parsed.data.destination !== existing.destination
+    && !canRecordDestination({ status: existing.status, cohortYear: existing.cohortYear })) {
+    return errorResponse("只有已毕业或大四成员可以登记去向", "DESTINATION_NOT_ELIGIBLE", 403);
+  }
   const updated = await store.updateProfile(session.user.personId, parsed.data);
   if (!updated) return errorResponse("资料已更新，请刷新后重试", "VERSION_CONFLICT", 409);
   const profile = await store.personDetail(session.user.personId, { userId: session.user.id, personId: session.user.personId, role: session.user.role });
@@ -142,6 +147,7 @@ accountApi.post("/me/placeholder-students", async (c) => {
   );
   if (result.state === "mentor-not-found") return errorResponse("师傅档案不存在", "MENTOR_NOT_FOUND", 404);
   if (result.state === "mentor-not-lineage") return errorResponse("只有谱系成员可以代建徒弟节点", "MENTOR_NOT_LINEAGE", 409);
+  if (result.state === "cohort-order") return errorResponse(`徒弟的级别必须晚于师傅（${result.mentorCohortYear}级）`, "COHORT_ORDER", 409);
   if (result.state === "invalid-identifier") return errorResponse("登录标识请填写有效邮箱或手机号", "INVALID_IDENTIFIER", 400);
   if (result.state === "identifier-conflict") return errorResponse("这个邮箱或手机号已经被使用", "IDENTIFIER_ALREADY_REGISTERED", 409);
   return c.json({ data: {
@@ -186,6 +192,12 @@ accountApi.patch("/me/placeholder-students/:personId", async (c) => {
   const joinedSeason = body?.joinedSeason === "spring" || body?.joinedSeason === "autumn" ? body.joinedSeason : null;
   if (!Number.isInteger(version) || version < 1 || (name !== undefined && (!name || name.length > 100)) || (cohortYear !== null && (!Number.isInteger(cohortYear) || cohortYear < 1900 || cohortYear > 2200)) || memberType === null || groupRole === undefined || status === null || birthday === undefined || (hasJoinParts && (!Number.isInteger(joinedYear) || joinedYear < 1900 || joinedYear > 2200 || !joinedSeason))) {
     return errorResponse("请检查徒弟资料", "VALIDATION_ERROR", 400);
+  }
+  if (hasCohortYear && !cohortOrderValid(await store.cohortYearOf(session.user.personId), cohortYear)) {
+    return errorResponse("徒弟的级别必须晚于师傅，同级成员不能互为师徒", "COHORT_ORDER", 409);
+  }
+  if (hasCohortYear && !cohortOrderValid(cohortYear, await store.earliestStudentCohortYear(personId))) {
+    return errorResponse("这位徒弟已经有自己的徒弟，级别不能晚于或等于他们", "COHORT_ORDER", 409);
   }
   const updated = await store.updateMentoredStudent(session.user.personId, personId, {
     version,

@@ -43,6 +43,8 @@ const editForm = ref({ name: "", cohortYear: "", birthday: "", joinedYear: "", j
 const editError = ref("");
 
 const me = computed(() => props.people.find((person) => person.id === props.sessionUser.personId) ?? null);
+/** Students always belong to a later cohort than their mentor. */
+const minStudentYear = computed(() => me.value?.cohort?.year ? me.value.cohort.year + 1 : 1900);
 const isPendingAccount = (student: Student) => student.account ? !student.account.activated && student.account.status === "active" : student.claim?.state === "pending" || student.claim?.state === "expired";
 const counts = computed(() => ({
   total: students.value.length,
@@ -405,7 +407,7 @@ onMounted(load);
           <label class="form-field"><span>姓名</span><input v-model.trim="createForm.name" maxlength="100" required autofocus /></label>
           <label class="form-field"><span>登录标识（可选）</span><input v-model.trim="createForm.loginIdentifier" maxlength="254" placeholder="邮箱或手机号；留空则用姓名登录" autocomplete="off" /></label>
           <div class="dialog-row">
-            <label class="form-field"><span>级别年份</span><input v-model.trim="createForm.cohortYear" type="number" min="1900" max="2200" /></label>
+            <label class="form-field"><span>级别年份</span><input v-model.trim="createForm.cohortYear" type="number" :min="minStudentYear" max="2200" :title="`徒弟的级别需晚于你（${me?.cohort?.year ?? '未分级'}）`" /></label>
             <label class="form-field"><span>生日</span><input v-model="createForm.birthday" type="date" /></label>
             <label class="form-field"><span>进组年份</span><input v-model.trim="createForm.joinedYear" type="number" min="1900" max="2200" required /></label>
             <label class="form-field"><span>进组季节</span><select v-model="createForm.joinedSeason"><option value="spring">春季</option><option value="autumn">秋季</option></select></label>
@@ -429,7 +431,7 @@ onMounted(load);
         <form class="auth-form" @submit.prevent="submitEdit">
           <label class="form-field"><span>姓名</span><input v-model.trim="editForm.name" maxlength="100" required /></label>
           <div class="dialog-row">
-            <label class="form-field"><span>级别年份</span><input v-model.trim="editForm.cohortYear" type="number" min="1900" max="2200" /></label>
+            <label class="form-field"><span>级别年份</span><input v-model.trim="editForm.cohortYear" type="number" :min="minStudentYear" max="2200" /></label>
             <label class="form-field"><span>生日</span><input v-model="editForm.birthday" type="date" /></label>
             <label class="form-field"><span>进组年份</span><input v-model.trim="editForm.joinedYear" type="number" min="1900" max="2200" required /></label>
             <label class="form-field"><span>进组季节</span><select v-model="editForm.joinedSeason"><option value="spring">春季</option><option value="autumn">秋季</option></select></label>

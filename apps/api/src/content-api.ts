@@ -90,18 +90,21 @@ attachmentApi.get("/:id", async (c) => {
   if (!item || item.status !== "ready") return error(404, "ATTACHMENT_NOT_FOUND", "附件不存在");
   // 动态配图跟随所属动态的可见范围；动态被删除后图片不再可读。
   if (item.postId && !item.postVisibility) return error(404, "ATTACHMENT_NOT_FOUND", "附件不存在");
-  const isPublic = item.category === "avatar" || item.postVisibility === "public";
+  const isDraft = item.postStatus === "draft";
+  const isPublic = item.category === "avatar" || (item.postVisibility === "public" && !isDraft);
   const current = isPublic ? null : await persistence(c.env.DB).session(c.req.header("Authorization"));
   if (!isPublic && (!current || (!item.postId && item.visibility === "private" && current.user.personId !== item.personId && current.user.role !== "admin"))) {
     return error(401, "UNAUTHENTICATED", "请先登录");
   }
+  // Draft images belong to the author until the post is published.
+  if (isDraft && current?.user.personId !== item.personId) return error(404, "ATTACHMENT_NOT_FOUND", "附件不存在");
   const object = await c.env.FILES.get(item.objectKey);
   if (!object) return error(404, "ATTACHMENT_NOT_FOUND", "附件不存在");
   const headers = new Headers();
   object.writeHttpMetadata(headers);
   // 头像是界面个性化资源，不作为可下载附件暴露文件名；其它资料才提供用户友好的附件名。
   if (item.category !== "avatar" && !item.postId) headers.set("Content-Disposition", `inline; filename*=UTF-8''${encodeURIComponent(item.originalName)}`);
-  headers.set("Cache-Control", isPublic ? "public, max-age=300" : item.postId ? "private, max-age=300" : "private, no-store");
+  headers.set("Cache-Control", isPublic ? "public, max-age=300" : item.postId && !isDraft ? "private, max-age=300" : "private, no-store");
   return new Response(object.body, { headers });
 });
 

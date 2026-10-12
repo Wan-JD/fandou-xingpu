@@ -5,7 +5,7 @@ import AuthImage from "../AuthImage.vue";
 import StarAvatar from "../StarAvatar.vue";
 import { ApiError, apiRequest } from "../../lib/api";
 import { fileSize, occurredLabel } from "../../lib/format";
-import { coverThemes, destinationLabels, type Achievement, type Attachment, type CoverTheme, type Destination, type Person, type Tone, type UploadCategory } from "../../lib/people";
+import { coverThemes, destinationEligible, destinationLabels, type Achievement, type Attachment, type CoverTheme, type Destination, type Person, type Tone, type UploadCategory } from "../../lib/people";
 
 type Section = "basic" | "story" | "skills" | "files" | "records";
 const props = defineProps<{ person: Person; token: string; tone: Tone; initialSection?: Section }>();
@@ -18,6 +18,8 @@ const sections: Array<{ id: Section; label: string; hint: string }> = [
   { id: "files", label: "头像与文件", hint: "头像、简历、相册" },
   { id: "records", label: "事迹与荣誉", hint: "时间线记录" },
 ];
+/** 去向只对已毕业成员和当前大四成员开放登记。 */
+const canRecordDestination = computed(() => destinationEligible(props.person));
 const section = ref<Section>(props.initialSection ?? "basic");
 const initial = () => ({
   motto: props.person.motto ?? "",
@@ -276,7 +278,14 @@ onUnmounted(() => {
             </div>
           </fieldset>
           <div class="field-grid">
-            <label class="form-field"><span>去向</span><select v-model="form.destination"><option value="">暂未填写</option><option v-for="(label, value) in destinationLabels" :key="value" :value="value">{{ label }}</option></select></label>
+            <label class="form-field">
+              <span>去向</span>
+              <select v-model="form.destination" :disabled="!canRecordDestination && !form.destination">
+                <option value="">{{ canRecordDestination ? "暂未填写" : "毕业或大四后登记" }}</option>
+                <option v-for="(label, value) in destinationLabels" :key="value" :value="value" :disabled="!canRecordDestination">{{ label }}</option>
+              </select>
+              <small v-if="!canRecordDestination" class="field-hint">去向只对已毕业和大四成员开放登记</small>
+            </label>
             <label class="form-field"><span>生日</span><input v-model="form.birthday" type="date" min="1900-01-01" max="2200-12-31" /></label>
             <div class="form-field join-field"><span>进组时间</span><div><input v-model.trim="form.joinedYear" type="number" inputmode="numeric" min="1900" max="2200" step="1" placeholder="年份" aria-label="进组年份" /><select v-model="form.joinedSeason" aria-label="进组季节"><option value="spring">春季</option><option value="autumn">秋季</option></select></div></div>
           </div>
@@ -407,6 +416,7 @@ onUnmounted(() => {
 .editor-body { overflow-y: auto; padding: 22px 28px 28px; overscroll-behavior: contain; }
 .editor-section { display: grid; gap: 18px; animation: editor-fade .3s ease-out; }
 .editor-note { margin: 0; color: var(--muted); font-size: 12.5px; }
+.field-hint { color: var(--muted); font-size: 11px; line-height: 1.5; }
 .field-count { justify-self: end; margin-top: -2px; color: var(--muted); font-size: 11px; }
 .field-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
 .field-grid.two { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); }

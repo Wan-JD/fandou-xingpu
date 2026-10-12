@@ -154,7 +154,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .legend-star.fog { color: var(--fog); opacity: 0.6; box-shadow: 0 0 6px var(--fog); }
 .legend-line { width: 26px; height: 2px; border-radius: 2px; background: linear-gradient(90deg, var(--gold), var(--aqua)); box-shadow: 0 0 8px rgba(142, 217, 208, 0.6); }
 .legend-count { padding: 3px 10px; border: 1px solid rgba(231, 201, 130, 0.4); border-radius: 999px; color: var(--gold); }
-.legend-scope { padding: 4px 10px; border: 1px solid var(--line); border-radius: 5px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
 
 /* ---------- Stage ---------- */
 .star-stage-meta { display: flex; justify-content: space-between; gap: 16px; padding: 0 clamp(4px, 2vw, 20px) 14px; font-size: 10.5px; letter-spacing: 0.3em; color: var(--muted); }

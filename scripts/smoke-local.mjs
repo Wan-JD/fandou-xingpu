@@ -63,15 +63,16 @@ const cohortCreated = await request("/api/admin/cohorts", { token: admin.token, 
 assert.equal(cohortCreated.response.status, 201, JSON.stringify(cohortCreated.payload));
 const cohortId = cohortCreated.payload.data.id;
 
-async function createPerson(name, mentorId = null) {
+async function createPerson(name, mentorId = null, cohortYear = undefined) {
   const result = await request("/api/admin/members", { token: admin.token, method: "POST", body: {
-    name, cohortId, status: "active", destination: null, mentorId, relationScope: "lineage",
+    name, ...(cohortYear ? { cohortYear } : { cohortId }), status: "active", destination: null, mentorId, relationScope: "lineage",
   } });
   assert.equal(result.response.status, 201, JSON.stringify(result.payload));
   return result.payload.data.id;
 }
-const parentId = await createPerson(`Smoke parent ${runId}`);
-const childId = await createPerson(`Smoke child ${runId}`, parentId);
+// Students always join a later cohort than their mentor.
+const parentId = await createPerson(`Smoke parent ${runId}`, null, 2096);
+const childId = await createPerson(`Smoke child ${runId}`, parentId, 2097);
 const members = await request("/api/admin/members", { token: admin.token });
 const child = members.payload.data.find((item) => item.id === childId);
 assert.ok(child);
@@ -353,6 +354,56 @@ assert.ok(pendingInviteId);
 assert.equal((await request(`/api/me/invites/${encodeURIComponent(pendingInviteId)}`, { token: admin.token, method: "DELETE" })).response.status, 409, "mentors only revoke their own invites");
 assert.equal((await request(`/api/me/invites/${encodeURIComponent(pendingInviteId)}`, { token: memberSession.token, method: "DELETE" })).response.status, 204);
 assert.equal((await request(`/api/invites/${encodeURIComponent(pendingInvite.payload.data.token)}`)).response.status, 410);
+
+// ---- Cohort order, destination eligibility and article drafts ----
+const sameCohort = await request("/api/admin/members", { token: admin.token, method: "POST", body: { name: `Same cohort ${runId}`, cohortYear: 2096, mentorId: parentId, status: "active", destination: null } });
+assert.equal(sameCohort.response.status, 409, "a mentor cannot take a student from the same cohort");
+assert.equal(sameCohort.payload.error.code, "COHORT_ORDER");
+const sameCohortPlaceholder = await request("/api/me/placeholder-students", { token: memberSession.token, method: "POST", body: { name: `Same cohort placeholder ${runId}`, cohortYear: 2097, memberType: "formal" } });
+assert.equal(sameCohortPlaceholder.response.status, 409);
+const parentNow = (await request("/api/admin/members", { token: admin.token })).payload.data.find((item) => item.id === parentId);
+assert.equal((await request(`/api/admin/members/${parentId}`, { token: admin.token, method: "PATCH", body: { version: parentNow.version, cohortYear: 2097 } })).response.status, 409, "a mentor cannot move into their student's cohort");
+
+const ineligibleProfile = await request("/api/me/profile", { token: memberSession.token });
+const ineligibleDestination = await request("/api/me/profile", { token: memberSession.token, method: "PATCH", body: { version: ineligibleProfile.payload.data.version, destination: "big_tech" } });
+assert.equal(ineligibleDestination.response.status, 403, "only graduates and fourth-year members record a destination");
+assert.equal(ineligibleDestination.payload.error.code, "DESTINATION_NOT_ELIGIBLE");
+const childRow = (await request("/api/admin/members", { token: admin.token })).payload.data.find((item) => item.id === childId);
+assert.equal((await request(`/api/admin/members/${childId}`, { token: admin.token, method: "PATCH", body: { version: childRow.version, destination: "big_tech" } })).response.status, 409, "administrators follow the same destination rule");
+const graduated = await request(`/api/admin/members/${childId}`, { token: admin.token, method: "PATCH", body: { version: childRow.version, status: "archived", destination: "big_tech" } });
+assert.equal(graduated.response.status, 200, JSON.stringify(graduated.payload));
+
+const draftForm = new FormData();
+draftForm.append("kind", "experience");
+draftForm.append("status", "draft");
+draftForm.append("title", `草稿 ${runId}`);
+draftForm.append("content", "");
+const draft = await requestMultipart("/api/me/posts", { token: memberSession.token, method: "POST", form: draftForm });
+assert.equal(draft.response.status, 201, JSON.stringify(draft.payload));
+assert.equal(draft.payload.data.status, "draft");
+const draftImageForm = new FormData();
+draftImageForm.append("images", new Blob(["draft-image"], { type: "image/png" }), "draft.png");
+const draftWithImage = await requestMultipart(`/api/me/posts/${draft.payload.data.id}/images`, { token: memberSession.token, method: "POST", form: draftImageForm });
+assert.equal(draftWithImage.response.status, 201, JSON.stringify(draftWithImage.payload));
+const draftImageId = draftWithImage.payload.data.images[0].id;
+assert.equal((await request(`/api/attachments/${draftImageId}`, { token: admin.token })).response.status, 404, "draft images stay with their author");
+assert.equal((await request(`/api/attachments/${draftImageId}`, { token: memberSession.token })).response.status, 200);
+assert.ok((await request("/api/me/posts/drafts", { token: memberSession.token })).payload.data.some((item) => item.id === draft.payload.data.id));
+assert.equal((await request(`/api/people/${childId}/posts`, { token: admin.token })).payload.data.some((item) => item.id === draft.payload.data.id), false, "drafts are not in the feed");
+assert.equal((await request(`/api/posts/${draft.payload.data.id}`, { token: admin.token })).response.status, 404, "drafts are not readable by others");
+assert.equal((await request(`/api/posts/${draft.payload.data.id}`, { token: memberSession.token })).response.status, 200);
+assert.equal((await request(`/api/posts/${draft.payload.data.id}/like`, { token: admin.token, method: "PUT" })).response.status, 404, "drafts cannot be liked");
+assert.equal((await request(`/api/me/posts/${draft.payload.data.id}`, { token: memberSession.token, method: "PATCH", body: { version: draftWithImage.payload.data.version, status: "published" } })).response.status, 400, "an empty draft cannot be published");
+const published = await request(`/api/me/posts/${draft.payload.data.id}`, { token: memberSession.token, method: "PATCH", body: {
+  version: draftWithImage.payload.data.version, status: "published", content: `# 经验\n\n![图](/api/attachments/${draftImageId})`, visibility: "public",
+} });
+assert.equal(published.response.status, 200, JSON.stringify(published.payload));
+assert.equal(published.payload.data.status, "published");
+assert.ok(published.payload.data.publishedAt);
+assert.equal((await request(`/api/attachments/${draftImageId}`)).response.status, 200, "published public article images become public");
+assert.equal((await request(`/api/posts/${draft.payload.data.id}`)).response.status, 200);
+assert.equal((await request(`/api/people/${childId}/posts`)).payload.data.find((item) => !item.isPinned)?.id, draft.payload.data.id, "publishing dates the post from now");
+assert.equal((await request(`/api/me/posts/${draft.payload.data.id}`, { token: memberSession.token, method: "PATCH", body: { version: published.payload.data.version, status: "draft" } })).response.status, 409, "published posts do not go back to drafts");
 
 const revocable = await request("/api/invites", { token: memberSession.token, method: "POST", body: {} });
 const inviteRows = await request("/api/admin/invites", { token: admin.token });

@@ -24,6 +24,8 @@
 - `POST /api/me/students/:personId/reset-password`：仅当代建账号从未被徒弟本人激活时，师傅才能重新生成初始密码；旧会话同时失效。
 - `DELETE /api/me/invites/:id`：撤销自己发出且尚未使用的邀请。
 - `GET /api/people/:id/posts`、`POST/PATCH/DELETE /api/me/posts`、`PUT/DELETE /api/posts/:id/like`：个人主页动态。动态只出现在作者主页；公开动态匿名可读，“仅成员”动态与其配图需要登录。每条动态最多 6 张图片，主页只能置顶一条。
+- 经验分享有独立的写作页 `/write`、阅读页 `/posts/:id` 和编辑页 `/posts/:id/edit`。`POST /api/me/posts` 传 `status: "draft"` 保存草稿（正文可为空），`GET /api/me/posts/drafts` 读取草稿箱，`PATCH` 传 `status: "published"` 发布；已发布的文章不能退回草稿。草稿及其图片只有作者本人可读，`GET /api/posts/:id` 读取单篇（草稿仅作者、仅成员动态需登录）。
+- 去向只有已毕业成员和当前大四成员可以登记（本人、管理员同样适用），清空始终允许。徒弟的级别必须晚于师傅：接口会返回 `COHORT_ORDER`，数据库触发器 `people_cohort_order_*` 也会拒绝同级或更早的师徒写入；邀请注册时新成员的级别取当年与师傅下一级中的较晚者。
 - `POST /api/invites`：登录后为当前人物生成 7 天有效的一次性邀请。
 - `GET /api/invites/:token`：预览邀请码状态和师傅摘要。
 - `POST /api/invites/:token/accept`：提交注册资料，原子创建账号、人物和师徒关系。
